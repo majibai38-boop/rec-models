@@ -4,9 +4,6 @@
 PyTorch 训练框架中。四个模型共用 Ali-CCP 的预处理结果、训练生命周期和命令行
 参数，并分别通过独立脚本启动。
 
-本仓库从 RecSDK 的 `training/torch/behavior_and_multi_task` 独立整理而来，源码包、
-数据预处理、启动脚本和测试均可在仓库根目录下直接使用。
-
 ## 目录
 
 ```text
@@ -246,8 +243,6 @@ python -m unittest discover \
 测试覆盖 Ali-CCP 跨分片组 batch、ETA/DIEN/ESSM/AutoInt 公共接口、ESSM 概率约束、
 padding/OOV 语义、loss backward 和真实模式下的 schema 校验。
 
-## 许可证与来源
+## 许可证
 
-项目采用 [Apache License 2.0](LICENSE)。源码从 Ascend
-`RecSDK_for_lingqu` 仓库的 `training/torch/behavior_and_multi_task` 目录独立整理，
-保留了源文件中的版权和许可证声明。
+项目采用 [Apache License 2.0](LICENSE)。

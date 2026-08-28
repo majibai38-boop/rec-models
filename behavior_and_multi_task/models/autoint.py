@@ -6,7 +6,7 @@ a final binary prediction bias.  The Ali-CCP adapter turns every scalar or
 variable-length feature group into one field embedding.  Sequence padding uses
 ``-1`` while feature ID ``0`` remains a valid, trainable OOV bucket.
 
-The RecSDK reference implementation used ``nn.MultiheadAttention`` directly on
+The reference implementation used ``nn.MultiheadAttention`` directly on
 batch-first tensors without enabling ``batch_first`` and applied
 ``CrossEntropyLoss`` to a single sigmoid output.  This implementation keeps its
 benchmark-oriented 8-layer/8-head defaults, but uses the field-wise attention
@@ -413,7 +413,7 @@ MyAutoInt = AutoInt
 
 # The test_qps schema starts with 23 fields.  The Ali-CCP adapter's historical
 # extra-field generator adds 232 scalar fields and 45 paired sequence fields,
-# resulting in the 300 fields used by the RecSDK AutoInt benchmark.
+# resulting in the 300 fields used by the reference AutoInt benchmark.
 AUTOINT_DEFAULTS = {
     "model": "autoint",
     "autoint_attention_layers": 8,
