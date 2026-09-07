@@ -2,12 +2,14 @@
 
 import argparse
 import inspect
+import os
 import pickle
 from pathlib import Path
 from collections import OrderedDict
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 try:
@@ -20,6 +22,7 @@ if str(TRAINING_TORCH_ROOT) not in sys.path:
     sys.path.append(str(TRAINING_TORCH_ROOT))
 
 if torch is not None:
+    from behavior_and_multi_task.data_process.aliccp import build_aliccp_torchrec_batch
     from behavior_and_multi_task.models.dien import (
         AliccpDIEN,
         DIEN,
@@ -28,10 +31,18 @@ if torch is not None:
         MaskedGRU,
         configure_dien,
     )
-    from behavior_and_multi_task.models.essm import (
-        AliccpESSM,
-        ESSM,
-        configure_essm,
+    from behavior_and_multi_task.models.esmm import (
+        AliccpESMM,
+        ESMM,
+        configure_esmm,
+    )
+    from behavior_and_multi_task.models.esmm_torchrec_dmp import (
+        AliccpTorchRecDmpFeatureEncoder,
+        AliccpTorchRecDmpESMM,
+        TORCHREC_DMP_AVAILABLE,
+        TORCHREC_DMP_VERSION,
+        configure_esmm_torchrec_dmp,
+        require_torchrec_dmp,
     )
     from behavior_and_multi_task.models.eta import (
         ETA,
@@ -45,12 +56,16 @@ if torch is not None:
     from behavior_and_multi_task.training_framework.config import AttrDict
     from behavior_and_multi_task.training_framework.handler import (
         ModelHandler,
+        get_embedding_dtype,
+        get_model_dtype,
         get_opts,
         get_params,
+        set_embedding_dtype,
     )
     from behavior_and_multi_task.training_framework.utils.serialization import (
         safe_weights_load,
     )
+    from behavior_and_multi_task.training_framework.utils.common import Profiler
     from behavior_and_multi_task.main import select_model
 
 
@@ -108,6 +123,24 @@ def tiny_batch(spec, batch_size=4):
 
 @unittest.skipIf(torch is None, "PyTorch is not installed")
 class ModelContractTest(unittest.TestCase):
+    def test_model_type_defaults_to_float32_and_supports_bfloat16(self):
+        params = get_opts(["main.py", "--mode=test_qps"], get_params())
+        self.assertEqual(params.model_type, "float32")
+        self.assertEqual(params.embedding_type, "model")
+        self.assertEqual(params.distributed_strategy, "auto")
+        self.assertEqual(get_model_dtype(params.model_type), torch.float32)
+        self.assertEqual(get_embedding_dtype(params.embedding_type, torch.float32), torch.float32)
+
+        params = get_opts(["main.py", "--mode=test_qps", "--model_type=bfloat16"], get_params())
+        self.assertEqual(params.model_type, "bfloat16")
+        self.assertEqual(get_model_dtype(params.model_type), torch.bfloat16)
+        self.assertEqual(get_embedding_dtype(params.embedding_type, torch.bfloat16), torch.bfloat16)
+        model = ESMM(input_dim=8, hidden_dims=(4,), dropout=0.0).to(dtype=get_model_dtype(params.model_type))
+        self.assertTrue(all(parameter.dtype == torch.bfloat16 for parameter in model.parameters()))
+
+        params = get_opts(["main.py", "--mode=test_qps", "--model_type=float32", "--embedding_type=bfloat16"], get_params())
+        self.assertEqual(get_embedding_dtype(params.embedding_type, torch.float32), torch.bfloat16)
+
     def test_checkpoint_flags_default_to_disabled_and_support_aliases(self):
         params = get_opts(["main.py", "--mode=test_qps"], get_params())
         self.assertFalse(params.load_checkpoint)
@@ -125,6 +158,28 @@ class ModelContractTest(unittest.TestCase):
         )
         self.assertTrue(params.load_checkpoint)
         self.assertTrue(params.save_checkpoint)
+
+    def test_gpu_profiler_uses_mode_and_rank_specific_output_directory(self):
+        class FakeTrace:
+            step_num = 31
+
+            def __init__(self):
+                self.path = None
+
+            def export_chrome_trace(self, path):
+                self.path = path
+
+        with tempfile.TemporaryDirectory() as profiling_path:
+            params = AttrDict(profiling_path=profiling_path, model="esmm", device="cuda:3", batch_size=4096, mode="test_qps", profiling_mode=True)
+            profiler = Profiler(params)
+            sentinel = object()
+            with mock.patch.dict(os.environ, {"RANK": "3"}), mock.patch.object(torch.profiler, "profile", return_value=sentinel) as profile:
+                self.assertIs(profiler.get_profiler(), sentinel)
+
+            trace = FakeTrace()
+            profile.call_args.kwargs["on_trace_ready"](trace)
+            expected = os.path.join(profiling_path, "esmm", "test_qps", "rank3_bs4096", "trace_31.json")
+            self.assertEqual(trace.path, expected)
 
     def test_disabled_checkpoint_io_does_not_create_or_load(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -210,7 +265,7 @@ class ModelContractTest(unittest.TestCase):
     def test_registry_exposes_all_models(self):
         self.assertEqual(
             list_models(),
-            ("autoint", "dien", "essm", "eta", "eta_legacy"),
+            ("autoint", "dien", "esmm", "esmm_torchrec_dmp", "eta", "eta_legacy"),
         )
 
     def test_model_preparser_does_not_treat_mode_as_model_abbreviation(self):
@@ -233,6 +288,11 @@ class ModelContractTest(unittest.TestCase):
             ["main.py", "--model=autoint", "--mode=train"]
         )
         self.assertEqual(selected, "autoint")
+
+        selected = select_model(
+            ["main.py", "--model=esmm_torchrec_dmp", "--mode=train"]
+        )
+        self.assertEqual(selected, "esmm_torchrec_dmp")
 
     def test_eta_legacy_preserves_original_lsh_ranking(self):
         class ReturnSelectedKeys(torch.nn.Module):
@@ -268,20 +328,20 @@ class ModelContractTest(unittest.TestCase):
         self.assertTrue(torch.equal(fixed_selected, sequence[:, :1]))
         self.assertTrue(torch.equal(legacy_selected, sequence[:, 1:]))
 
-    def test_essm_configuration_is_validated_before_model_creation(self):
+    def test_esmm_configuration_is_validated_before_model_creation(self):
         params = AttrDict(
             dropout=1.0,
             ctr_loss_weight=1.0,
             ctcvr_loss_weight=1.0,
         )
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "dropout"):
-            configure_essm(params)
+            configure_esmm(params)
 
         params.dropout = 0.0
         params.ctr_loss_weight = 0.0
         params.ctcvr_loss_weight = 0.0
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "at least one"):
-            configure_essm(params)
+            configure_esmm(params)
 
     def test_legacy_compiled_checkpoint_prefixes_are_removed(self):
         state_dict = OrderedDict(
@@ -303,20 +363,39 @@ class ModelContractTest(unittest.TestCase):
         source = inspect.getsource(ModelHandler.main_ddp)
         device_position = source.index("self.params.device =")
         hf32_position = source.index("self.set_hf32()")
+        dtype_position = source.index("model_dtype = get_model_dtype")
+        embedding_dtype_position = source.index("embedding_dtype = get_embedding_dtype")
+        model_to_position = source.index("self.model = self.model.to")
+        embedding_to_position = source.index("set_embedding_dtype(self.model")
         init_position = source.index("self.init_model()")
         ddp_position = source.index("self.model = DDP")
         compile_position = source.index("self.set_compile_model()")
 
         self.assertLess(device_position, hf32_position)
-        self.assertLess(hf32_position, init_position)
+        self.assertLess(hf32_position, dtype_position)
+        self.assertLess(dtype_position, embedding_dtype_position)
+        self.assertLess(embedding_dtype_position, model_to_position)
+        self.assertLess(model_to_position, embedding_to_position)
+        self.assertLess(embedding_to_position, init_position)
         self.assertLess(init_position, ddp_position)
         self.assertLess(ddp_position, compile_position)
 
-    def test_dense_essm_contract_is_preserved(self):
-        model = ESSM(input_dim=8, hidden_dims=(4,), dropout=0.0)
+    def test_dense_esmm_contract_is_preserved(self):
+        model = ESMM(input_dim=8, hidden_dims=(4,), dropout=0.0)
         outputs = model(torch.randn(3, 8))
         self.assertEqual(outputs.shape, (3, 2))
         self.assertTrue(torch.all(outputs[:, 1] <= outputs[:, 0]))
+
+    def test_dense_esmm_is_fx_traceable_for_torchrec_pipeline(self):
+        model = ESMM(input_dim=8, hidden_dims=(4,), dropout=0.0)
+        traced = torch.fx.symbolic_trace(model)
+        inputs = torch.randn(3, 8)
+        torch.testing.assert_close(traced(inputs), model(inputs))
+
+    def test_dense_esmm_still_validates_real_tensor_shape(self):
+        model = ESMM(input_dim=8, hidden_dims=(4,), dropout=0.0)
+        with self.assertRaisesRegex(ValueError, "inputs must have shape"):
+            model(torch.randn(3, 7))
 
     def test_dense_dien_core_supports_interest_evolution_variants(self):
         context = torch.randn(3, 8)
@@ -474,7 +553,7 @@ class ModelContractTest(unittest.TestCase):
             torch.allclose(normalized, torch.tensor([[0.5, 0.5, 0.0]]))
         )
 
-    def test_aliccp_essm_forward_loss_and_backward(self):
+    def test_aliccp_esmm_forward_loss_and_backward(self):
         spec = tiny_spec()
         params = AttrDict(
             embedding_size=4,
@@ -483,7 +562,7 @@ class ModelContractTest(unittest.TestCase):
             ctr_loss_weight=1.0,
             ctcvr_loss_weight=1.0,
         )
-        model = AliccpESSM(params, spec)
+        model = AliccpESMM(params, spec)
         features, labels = tiny_batch(spec)
 
         predictions = model(features, "train")
@@ -507,7 +586,7 @@ class ModelContractTest(unittest.TestCase):
             ctr_loss_weight=1.0,
             ctcvr_loss_weight=1.0,
         )
-        model = AliccpESSM(params, spec)
+        model = AliccpESMM(params, spec)
         field = spec["multi_hot_fields"][0]
         values = torch.tensor([[0, -1, -1], [1, 0, -1]])
 
@@ -656,6 +735,139 @@ class ModelContractTest(unittest.TestCase):
             any(parameter.grad is not None for parameter in model.parameters())
         )
 
+    def test_torchrec_dmp_dependency_failure_is_deferred_until_model_build(self):
+        if TORCHREC_DMP_AVAILABLE:
+            require_torchrec_dmp()
+            self.assertTrue(str(TORCHREC_DMP_VERSION).startswith("1.2.0"))
+        else:
+            with self.assertRaisesRegex(RuntimeError, "requires TorchRec 1.2.0"):
+                require_torchrec_dmp()
+
+    def test_torchrec_dmp_filters_padding_without_weighted_kjt(self):
+        source = inspect.getsource(build_aliccp_torchrec_batch)
+        self.assertIn("values[valid]", source)
+        self.assertIn("valid.sum(dim=1)", source)
+        self.assertIn("torch.int32", source)
+        self.assertNotIn("weights=", source)
+
+    @unittest.skipUnless(torch is not None and TORCHREC_DMP_AVAILABLE, "TorchRec DMP is not installed")
+    def test_torchrec_dmp_batch_prebuilds_int32_kjt(self):
+        spec = tiny_spec()
+        features, labels = tiny_batch(spec)
+        batch = build_aliccp_torchrec_batch(features, labels, spec, "int32")
+        self.assertEqual(batch.sparse_features.values().dtype, torch.int32)
+        self.assertTrue(torch.all(batch.sparse_features.values() >= 0))
+        self.assertEqual(batch.normalizers.shape, (4, len(batch.sparse_features.keys())))
+
+    def test_torchrec_dmp_uses_standard_mixed_sharding_ebc_api(self):
+        source = inspect.getsource(AliccpTorchRecDmpESMM.build_distributed)
+        self.assertIn("EmbeddingBagCollectionSharder", source)
+        self.assertIn("EmbeddingShardingPlanner", source)
+        self.assertIn("local_world_size = int(get_local_size())", source)
+        self.assertIn("local_world_size=local_world_size", source)
+        self.assertIn("ShardingType.ROW_WISE", source)
+        self.assertIn("ShardingType.TABLE_WISE", source)
+        self.assertIn("torchrec_row_wise_min_rows", source)
+        self.assertIn("EmbeddingComputeKernel.FUSED", source)
+        self.assertIn("torch.optim.Adagrad", source)
+        self.assertNotIn("DynamicEmbedding", source)
+
+    def test_torchrec_dmp_uses_npu_120_operator_adapter(self):
+        module_source = inspect.getsource(sys.modules[AliccpTorchRecDmpESMM.__module__])
+        self.assertIn("import fbgemm_ascend", module_source)
+        self.assertNotIn("torch.ops.load_library", module_source)
+
+    def test_torchrec_dmp_uses_sparse_dist_pipelines_and_prebuilt_kjt(self):
+        encoder_source = inspect.getsource(AliccpTorchRecDmpFeatureEncoder.forward)
+        train_pipeline_source = inspect.getsource(AliccpTorchRecDmpESMM.build_train_pipeline)
+        eval_pipeline_source = inspect.getsource(AliccpTorchRecDmpESMM.build_eval_pipeline)
+        train_epoch_source = inspect.getsource(ModelHandler.run_torchrec_dmp_train_one_epoch)
+        self.assertIn("batch.sparse_features", encoder_source)
+        self.assertNotIn("KeyedJaggedTensor", encoder_source)
+        self.assertIn("TrainPipelineSparseDist", train_pipeline_source)
+        self.assertIn("TrainPipelineSparseDist", eval_pipeline_source)
+        self.assertNotIn("return EvalPipelineSparseDist", eval_pipeline_source)
+        self.assertNotIn(".reset()", train_epoch_source)
+
+    def test_torchrec_dmp_configuration_supports_cuda_and_npu(self):
+        params = AttrDict(
+            dropout=0.0,
+            ctr_loss_weight=1.0,
+            ctcvr_loss_weight=1.0,
+            distributed_strategy="auto",
+            device="npu",
+            embedding_type="float32",
+            model_type="float32",
+            compile=False,
+            graph=False,
+            shape_handle=False,
+            check_precision=False,
+            mode="train",
+            torchrec_sharding_strategy="row_wise",
+            torchrec_row_wise_min_rows=100000,
+            torchrec_kjt_dtype="int32",
+        )
+        configured = configure_esmm_torchrec_dmp(params)
+        self.assertEqual(configured.distributed_strategy, "torchrec_dmp")
+
+        cuda_params = AttrDict(configured)
+        cuda_params.device = "cuda"
+        cuda_params.torchrec_sharding_strategy = "hybrid"
+        self.assertEqual(configure_esmm_torchrec_dmp(cuda_params).device, "cuda")
+
+        npu_hybrid_params = AttrDict(configured)
+        npu_hybrid_params.torchrec_sharding_strategy = "hybrid"
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "supports only.*row_wise"):
+            configure_esmm_torchrec_dmp(npu_hybrid_params)
+
+    def test_handler_recognizes_torchrec_dmp_strategy(self):
+        handler = ModelHandler.__new__(ModelHandler)
+        handler.params = AttrDict(distributed_strategy="torchrec_dmp")
+        self.assertTrue(handler.uses_torchrec_dmp())
+        handler.params.distributed_strategy = "auto"
+        self.assertFalse(handler.uses_torchrec_dmp())
+
+    def test_mixed_embedding_bf16_dense_fp32_model_boundaries(self):
+        spec = tiny_spec()
+        features, _ = tiny_batch(spec)
+        eta_params = AttrDict(max_seq_len=5, num_heads=2, deep_layers=[16], reuse_hash=True, hash_bits=8, topk=2, extra_fields=0, embedding_size=[4], device="cpu")
+        esmm_params = AttrDict(embedding_size=4, hidden_dims=(8, 4), dropout=0.0, ctr_loss_weight=1.0, ctcvr_loss_weight=1.0)
+        dien_params = AttrDict(embedding_size=4, dnn_hidden_size=(8, 4), att_hidden_size=(8, 4), gru_type="GRU", dien_dropout=0.0, dien_positive_class_weight=1.0)
+        models = (
+            ("eta", ETA(eta_params, spec), lambda model: model.out_layer.weight),
+            ("eta_legacy", LegacyETA(eta_params, spec), lambda model: model.out_layer.weight),
+            ("esmm", AliccpESMM(esmm_params, spec), lambda model: model.esmm.ctr_tower.network[0].weight),
+            ("dien", AliccpDIEN(dien_params, spec), lambda model: model.dien.output_layer.weight),
+        )
+
+        for name, model, dense_weight in models:
+            with self.subTest(model=name):
+                model.to(dtype=torch.float32)
+                self.assertGreater(set_embedding_dtype(model, torch.bfloat16), 0)
+                self.assertTrue(all(module.weight.dtype == torch.bfloat16 for module in model.modules() if isinstance(module, torch.nn.Embedding)))
+                self.assertEqual(dense_weight(model).dtype, torch.float32)
+                self.assertEqual(model(features, "train")["ctr"].dtype, torch.float32)
+
+    def test_eta_special_field_embeddings_follow_model_dtype(self):
+        spec = tiny_spec()
+        params = AttrDict(
+            max_seq_len=5,
+            num_heads=2,
+            deep_layers=[16],
+            reuse_hash=True,
+            hash_bits=8,
+            topk=2,
+            extra_fields=0,
+            embedding_size=[4],
+            device="cpu",
+        )
+        features, _ = tiny_batch(spec)
+        for model_class in (ETA, LegacyETA):
+            model = model_class(params, spec).to(dtype=torch.bfloat16)
+            preprocessed = model.embedding_preprocess(features)
+            embeddings = preprocessed[0] if isinstance(preprocessed, tuple) else preprocessed
+            self.assertEqual(embeddings["210"].dtype, torch.bfloat16)
+
     def test_eta_legacy_implements_the_framework_contract(self):
         spec = tiny_spec()
         params = AttrDict(
@@ -670,6 +882,9 @@ class ModelContractTest(unittest.TestCase):
             device="cpu",
         )
         model = LegacyETA(params, spec)
+        model.to(dtype=torch.bfloat16)
+        self.assertEqual(model.long_attention.reuse_hash.dtype, torch.bfloat16)
+        model.to(dtype=torch.float32)
         features, labels = tiny_batch(spec)
 
         predictions = model(features, "train")

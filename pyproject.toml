@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "behavior-and-multi-task"
 version = "0.1.0"
-description = "PyTorch training framework for ETA, DIEN, AutoInt, and ESSM recommendation models"
+description = "PyTorch training framework for ETA, DIEN, AutoInt, and ESMM recommendation models"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
@@ -34,6 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 legacy = ["deepctr-torch"]
+torchrec = ["torchrec==1.2.0"]
 
 [project.scripts]
 behavior-and-multi-task = "behavior_and_multi_task.main:main"

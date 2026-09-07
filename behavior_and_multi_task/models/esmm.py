@@ -1,6 +1,6 @@
 """PyTorch ESMM core, Ali-CCP adapter and framework registration hooks.
 
-``ESSM`` remains a dataset-independent dense core. ``AliccpESSM`` adds the
+``ESMM`` remains a dataset-independent dense core. ``AliccpESMM`` adds the
 field embeddings, sequence pooling, framework output contract and two-task
 loss needed to train that core on ``aliccp_out``.
 
@@ -58,7 +58,7 @@ class _Tower(nn.Module):
         return self.network(inputs)
 
 
-class ESSM(nn.Module):
+class ESMM(nn.Module):
     """Entire Space Multi-Task Model implemented with plain PyTorch.
 
     Args:
@@ -96,7 +96,9 @@ class ESSM(nn.Module):
 
     def probabilities(self, inputs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         """Return CTR, CVR and CTCVR probabilities separately."""
-        if inputs.ndim != 2 or inputs.size(1) != self.input_dim:
+        # TorchRec SparseDist pipelines trace this method with an FX Proxy.
+        # Runtime shape validation must not turn that symbolic value into bool.
+        if isinstance(inputs, Tensor) and (inputs.ndim != 2 or inputs.size(1) != self.input_dim):
             raise ValueError(
                 "inputs must have shape [batch_size, {}], got {}".format(
                     self.input_dim, tuple(inputs.shape)
@@ -189,7 +191,7 @@ class AliccpFeatureEncoder(nn.Module):
         return torch.cat(encoded, dim=1)
 
 
-class AliccpESSM(nn.Module):
+class AliccpESMM(nn.Module):
     """Ali-CCP adapter implementing the shared framework's model contract."""
 
     def __init__(self, params, spec: Mapping) -> None:
@@ -197,7 +199,7 @@ class AliccpESSM(nn.Module):
         embedding_dim = int(params.embedding_size)
         hidden_dims = tuple(int(dim) for dim in params.hidden_dims)
         self.encoder = AliccpFeatureEncoder(spec, embedding_dim)
-        self.esmm = ESSM(
+        self.esmm = ESMM(
             input_dim=self.encoder.output_dim,
             hidden_dims=hidden_dims,
             dropout=float(params.dropout),
@@ -205,13 +207,13 @@ class AliccpESSM(nn.Module):
         self.ctr_loss_weight = float(params.get("ctr_loss_weight", 1.0))
         self.ctcvr_loss_weight = float(params.get("ctcvr_loss_weight", 1.0))
         if self.ctr_loss_weight < 0 or self.ctcvr_loss_weight < 0:
-            raise ValueError("ESSM loss weights must be non-negative")
+            raise ValueError("ESMM loss weights must be non-negative")
         if self.ctr_loss_weight == 0 and self.ctcvr_loss_weight == 0:
-            raise ValueError("At least one ESSM loss weight must be positive")
+            raise ValueError("At least one ESMM loss weight must be positive")
 
     def forward(self, features: Mapping[str, Tensor], mode: str = "train"):
         del mode
-        dense_inputs = self.encoder(features)
+        dense_inputs = self.encoder(features).to(self.esmm.ctr_tower.network[0].weight.dtype)
         ctr, cvr, ctcvr = self.esmm.probabilities(dense_inputs)
         return {
             "ctr": ctr.squeeze(-1),
@@ -233,12 +235,8 @@ class AliccpESSM(nn.Module):
         )
 
 
-# The paper and the original project use "ESMM"; keep it as a convenient alias.
-ESMM = ESSM
-
-
-ESSM_DEFAULTS = {
-    "model": "essm",
+ESMM_DEFAULTS = {
+    "model": "esmm",
     "hidden_dims": (256, 128),
     "dropout": 0.0,
     "ctr_loss_weight": 1.0,
@@ -249,7 +247,7 @@ ESSM_DEFAULTS = {
 
 
 def parse_hidden_dims(value):
-    """Parse positive ESSM tower widths from the command line."""
+    """Parse positive ESMM tower widths from the command line."""
     try:
         dimensions = tuple(int(item) for item in value.split(","))
     except ValueError as exc:
@@ -263,46 +261,46 @@ def parse_hidden_dims(value):
     return dimensions
 
 
-def add_essm_arguments(parser):
-    """Add ESSM-only architecture and loss arguments to the shared parser."""
+def add_esmm_arguments(parser):
+    """Add ESMM-only architecture and loss arguments to the shared parser."""
     parser.add_argument(
         "--hidden_dims",
         type=parse_hidden_dims,
-        default=ESSM_DEFAULTS["hidden_dims"],
+        default=ESMM_DEFAULTS["hidden_dims"],
         help="comma-separated widths of the CTR and CVR towers",
     )
     parser.add_argument(
         "--dropout",
         type=float,
-        default=ESSM_DEFAULTS["dropout"],
+        default=ESMM_DEFAULTS["dropout"],
         help="dropout used after each hidden activation",
     )
     parser.add_argument(
         "--ctr_loss_weight",
         type=float,
-        default=ESSM_DEFAULTS["ctr_loss_weight"],
+        default=ESMM_DEFAULTS["ctr_loss_weight"],
     )
     parser.add_argument(
         "--ctcvr_loss_weight",
         type=float,
-        default=ESSM_DEFAULTS["ctcvr_loss_weight"],
+        default=ESMM_DEFAULTS["ctcvr_loss_weight"],
     )
     return parser
 
 
-def build_essm(params, spec):
-    """Build the Ali-CCP ESSM adapter through the framework contract."""
-    return AliccpESSM(params, spec)
+def build_esmm(params, spec):
+    """Build the Ali-CCP ESMM adapter through the framework contract."""
+    return AliccpESMM(params, spec)
 
 
-def configure_essm(params):
-    """Validate ESSM parameters before distributed workers initialize models."""
+def configure_esmm(params):
+    """Validate ESMM parameters before distributed workers initialize models."""
     if not 0.0 <= params.dropout < 1.0:
         raise argparse.ArgumentTypeError("dropout must be in [0, 1)")
     if params.ctr_loss_weight < 0 or params.ctcvr_loss_weight < 0:
-        raise argparse.ArgumentTypeError("ESSM loss weights must be non-negative")
+        raise argparse.ArgumentTypeError("ESMM loss weights must be non-negative")
     if params.ctr_loss_weight == 0 and params.ctcvr_loss_weight == 0:
         raise argparse.ArgumentTypeError(
-            "at least one ESSM loss weight must be positive"
+            "at least one ESMM loss weight must be positive"
         )
     return params

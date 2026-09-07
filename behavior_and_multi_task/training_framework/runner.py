@@ -27,6 +27,9 @@ def run_model(
 
     * ``forward(features, mode) -> dict[str, Tensor]``
     * ``loss(predictions, labels) -> scalar Tensor``
+
+    TorchRec DMP adapters additionally provide ``build_distributed`` and the
+    SparseDist pipelines; their distributed callable returns ``(loss, output)``.
     """
 
     if spec_loader is None or data_loader is None or test_handler_factory is None:

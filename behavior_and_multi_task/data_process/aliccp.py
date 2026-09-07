@@ -15,16 +15,93 @@
 
 """Ali-CCP sharded dataset loading for the unified training package."""
 
+from dataclasses import dataclass
 import os
 import json
 import stat
 import glob
-
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
 from ..training_framework.handler import TestHandler
 from ..training_framework.utils.logger import logger
+
+
+_TORCHREC_BATCH_IMPORT_ERROR = None
+try:
+    from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
+    from torchrec.streamable import Pipelineable
+except Exception as exc:
+    KeyedJaggedTensor = None
+    Pipelineable = object
+    _TORCHREC_BATCH_IMPORT_ERROR = exc
+
+
+def require_torchrec_batch():
+    if _TORCHREC_BATCH_IMPORT_ERROR is not None:
+        raise RuntimeError("TorchRec DMP data loading requires TorchRec and a compatible FBGEMM installation") from _TORCHREC_BATCH_IMPORT_ERROR
+
+
+@dataclass
+class AliccpTorchRecBatch(Pipelineable):
+    """Pipelineable Ali-CCP batch with a prebuilt KJT."""
+
+    sparse_features: object
+    normalizers: torch.Tensor
+    y: torch.Tensor
+    z: torch.Tensor
+
+    @property
+    def labels(self):
+        return {"y": self.y, "z": self.z}
+
+    def to(self, device, non_blocking=False):
+        return AliccpTorchRecBatch(sparse_features=self.sparse_features.to(device=device, non_blocking=non_blocking), normalizers=self.normalizers.to(device=device, non_blocking=non_blocking), y=self.y.to(device=device, non_blocking=non_blocking), z=self.z.to(device=device, non_blocking=non_blocking))
+
+    def record_stream(self, stream):
+        self.sparse_features.record_stream(stream)
+        self.normalizers.record_stream(stream)
+        self.y.record_stream(stream)
+        self.z.record_stream(stream)
+
+    def pin_memory(self):
+        return AliccpTorchRecBatch(sparse_features=self.sparse_features.pin_memory(), normalizers=self.normalizers.pin_memory(), y=self.y.pin_memory(), z=self.z.pin_memory())
+
+
+def build_aliccp_torchrec_batch(features, labels, spec, index_dtype="int32"):
+    """Remove padding and build the KJT on CPU before model forward."""
+    require_torchrec_batch()
+    if index_dtype not in ("int32", "int64"):
+        raise ValueError(f"Unsupported KJT index dtype: {index_dtype}")
+    dtype = torch.int32 if index_dtype == "int32" else torch.int64
+    one_hot_fields = tuple(spec["one_hot_fields"])
+    field_names = one_hot_fields + tuple(spec["multi_hot_fields"]) + tuple(spec["special_fields"])
+    value_parts = []
+    length_parts = []
+    normalizer_parts = []
+    batch_size = None
+    for field in field_names:
+        values = features[field]
+        if field in one_hot_fields:
+            if values.ndim == 1:
+                values = values.unsqueeze(1)
+            elif values.ndim != 2 or values.size(1) != 1:
+                raise ValueError(f"One-hot field {field} must have shape [batch] or [batch, 1], got {tuple(values.shape)}")
+        elif values.ndim != 2:
+            raise ValueError(f"Sequence field {field} must have shape [batch, length], got {tuple(values.shape)}")
+        if batch_size is None:
+            batch_size = values.size(0)
+        elif values.size(0) != batch_size:
+            raise ValueError("All Ali-CCP feature fields must have the same batch size")
+        valid = values.ge(0)
+        valid_counts = valid.sum(dim=1)
+        value_parts.append(values[valid].to(dtype=dtype))
+        length_parts.append(valid_counts.to(dtype=torch.int32))
+        normalizer_parts.append(valid_counts.clamp_min(1).to(dtype=torch.int32))
+
+    values = torch.cat(value_parts)
+    sparse_features = KeyedJaggedTensor.from_lengths_sync(keys=list(field_names), values=values, lengths=torch.cat(length_parts))
+    return AliccpTorchRecBatch(sparse_features=sparse_features, normalizers=torch.stack(normalizer_parts, dim=1), y=labels["y"], z=labels["z"])
 
 
 class AliccpDataset(IterableDataset):
@@ -40,6 +117,8 @@ class AliccpDataset(IterableDataset):
         self.batch_size = int(params.batch_size)
         self.device = params.device
         self.seed = int(params.get("seed", 42))
+        self.emit_torchrec_batch = params.get("distributed_strategy", "auto") == "torchrec_dmp"
+        self.kjt_index_dtype = params.get("torchrec_kjt_dtype", "int32")
         self._epoch = 0
         self.feature_names = (
             list(spec["one_hot_fields"])
@@ -204,19 +283,14 @@ class AliccpDataset(IterableDataset):
                 pending_count += take_count
 
                 if pending_count == self.batch_size:
-                    features = {
-                        name: torch.cat(parts, dim=0).to(
-                            self.device, dtype=torch.long, non_blocking=True
-                        )
-                        for name, parts in feature_parts.items()
-                    }
-                    labels = {
-                        name: torch.cat(parts, dim=0).to(
-                            self.device, non_blocking=True
-                        )
-                        for name, parts in label_parts.items()
-                    }
-                    yield features, labels
+                    features = {name: torch.cat(parts, dim=0) for name, parts in feature_parts.items()}
+                    labels = {name: torch.cat(parts, dim=0) for name, parts in label_parts.items()}
+                    if self.emit_torchrec_batch:
+                        yield build_aliccp_torchrec_batch(features, labels, self.spec, self.kjt_index_dtype)
+                    else:
+                        features = {name: values.to(self.device, dtype=torch.long, non_blocking=True) for name, values in features.items()}
+                        labels = {name: values.to(self.device, non_blocking=True) for name, values in labels.items()}
+                        yield features, labels
                     feature_parts = {name: [] for name in self.feature_names}
                     label_parts = {name: [] for name in ("y", "z")}
                     pending_count = 0
@@ -300,7 +374,7 @@ def json_file_load(json_name: str, json_path: str) -> dict:
 
 def generate_dataloader(dataset):
     # The iterable dataset emits complete batches while it streams each shard.
-    return DataLoader(dataset, batch_size=None, num_workers=0)
+    return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=dataset.emit_torchrec_batch)
 
 
 def _find_shards(data_dir, mode, spec):
@@ -374,7 +448,8 @@ class TestAliccpHandler(TestHandler):
     def generate_data(self, batch_size):
 
         features = {}
-        device = self.params.device
+        torchrec_dmp = self.params.get("distributed_strategy", "auto") == "torchrec_dmp"
+        device = "cpu" if torchrec_dmp else self.params.device
         for key in self.spec["one_hot_fields"]:
             features[key] = torch.randint(
                 low=0, high=self.spec["vocab_length"][key], size=(batch_size, 1)
@@ -389,4 +464,7 @@ class TestAliccpHandler(TestHandler):
             features[key] = torch.randint(
                 low=0, high=self.spec["vocab_length"][key], size=(batch_size, 38)
             ).to(device)
+        if torchrec_dmp:
+            labels = {"y": torch.zeros(batch_size), "z": torch.zeros(batch_size)}
+            return build_aliccp_torchrec_batch(features, labels, self.spec, self.params.get("torchrec_kjt_dtype", "int32")).to(torch.device(self.params.device), non_blocking=False)
         return features

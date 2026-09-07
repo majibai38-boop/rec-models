@@ -15,11 +15,17 @@ from .dien import (
     build_dien,
     configure_dien,
 )
-from .essm import (
-    ESSM_DEFAULTS,
-    add_essm_arguments,
-    build_essm,
-    configure_essm,
+from .esmm import (
+    ESMM_DEFAULTS,
+    add_esmm_arguments,
+    build_esmm,
+    configure_esmm,
+)
+from .esmm_torchrec_dmp import (
+    ESMM_TORCHREC_DMP_DEFAULTS,
+    add_esmm_torchrec_dmp_arguments,
+    build_esmm_torchrec_dmp,
+    configure_esmm_torchrec_dmp,
 )
 from .eta import (
     ETA_DEFAULTS,
@@ -63,11 +69,17 @@ MODEL_REGISTRY = {
         configure_parser=add_eta_arguments,
         configure_params=configure_eta,
     ),
-    "essm": ModelRegistration(
-        factory=build_essm,
-        defaults=ESSM_DEFAULTS,
-        configure_parser=add_essm_arguments,
-        configure_params=configure_essm,
+    "esmm": ModelRegistration(
+        factory=build_esmm,
+        defaults=ESMM_DEFAULTS,
+        configure_parser=add_esmm_arguments,
+        configure_params=configure_esmm,
+    ),
+    "esmm_torchrec_dmp": ModelRegistration(
+        factory=build_esmm_torchrec_dmp,
+        defaults=ESMM_TORCHREC_DMP_DEFAULTS,
+        configure_parser=add_esmm_torchrec_dmp_arguments,
+        configure_params=configure_esmm_torchrec_dmp,
     ),
 }
 

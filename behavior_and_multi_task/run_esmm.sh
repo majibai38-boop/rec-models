@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TRAINING_TORCH_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 export PRE_GRAPH_OPTIMIZER=1
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 DEVICE=${DEVICE:-npu} # cpu/npu/cuda
 MASTER_ADDR=${MASTER_ADDR:-localhost}
 MASTER_PORT=${MASTER_PORT:-12346}
@@ -22,6 +24,17 @@ PROFILING_PATH=${PROFILING_PATH:-"${SCRIPT_DIR}/profiling"}
 MODE=${MODE:-train}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
 BATCH_SIZE=${BATCH_SIZE:-4096}
+MODEL_TYPE=${MODEL_TYPE:-float32}
+MODEL=${MODEL:-esmm_torchrec_dmp}
+if [ "${MODEL}" = "esmm_torchrec_dmp" ]; then
+  EMBEDDING_TYPE=${EMBEDDING_TYPE:-float32}
+else
+  EMBEDDING_TYPE=${EMBEDDING_TYPE:-model}
+fi
+DISTRIBUTED_STRATEGY=${DISTRIBUTED_STRATEGY:-auto}
+TORCHREC_SHARDING_STRATEGY=${TORCHREC_SHARDING_STRATEGY:-row_wise}
+TORCHREC_ROW_WISE_MIN_ROWS=${TORCHREC_ROW_WISE_MIN_ROWS:-100000}
+TORCHREC_KJT_DTYPE=${TORCHREC_KJT_DTYPE:-int32}
 LEARNING_RATE=${LEARNING_RATE:-0.001}
 EMBEDDING_SIZE=${EMBEDDING_SIZE:-32}
 HIDDEN_DIMS=${HIDDEN_DIMS:-256,128}
@@ -29,6 +42,15 @@ DROPOUT=${DROPOUT:-0.0}
 TRAIN_STOP_STEP=${TRAIN_STOP_STEP:--1}
 VAL_STOP_STEP=${VAL_STOP_STEP:--1}
 export JOB_ID="${JOB_ID:-10086}"
+
+TORCHREC_ARGS=()
+if [ "${MODEL}" = "esmm_torchrec_dmp" ]; then
+  TORCHREC_ARGS+=(
+    --torchrec_sharding_strategy="${TORCHREC_SHARDING_STRATEGY}"
+    --torchrec_row_wise_min_rows="${TORCHREC_ROW_WISE_MIN_ROWS}"
+    --torchrec_kjt_dtype="${TORCHREC_KJT_DTYPE}"
+  )
+fi
 
 if [ "$DEVICE" = "npu" ]; then
     export ASCEND_RT_VISIBLE_DEVICES=${DEVICE_ID}
@@ -62,6 +84,9 @@ torchrun \
   --profiling_path="${PROFILING_PATH}" \
   --num_epochs="${NUM_EPOCHS}" \
   --batch_size="${BATCH_SIZE}" \
+  --model_type="${MODEL_TYPE}" \
+  --embedding_type="${EMBEDDING_TYPE}" \
+  --distributed_strategy="${DISTRIBUTED_STRATEGY}" \
   --learning_rate="${LEARNING_RATE}" \
   --embedding_size="${EMBEDDING_SIZE}" \
   --hidden_dims="${HIDDEN_DIMS}" \
@@ -72,7 +97,8 @@ torchrun \
   --dynamic_batch=false \
   --train_stop_step="${TRAIN_STOP_STEP}" \
   --val_stop_step="${VAL_STOP_STEP}" \
+  "${TORCHREC_ARGS[@]}" \
   "$@" \
-  --model=essm
+  --model="${MODEL}"
 
 echo "finished!"

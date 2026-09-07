@@ -1,4 +1,4 @@
-# Ali-CCP preprocessing for ETA, DIEN, ESSM, and AutoInt
+# Ali-CCP preprocessing for ETA, DIEN, ESMM, and AutoInt
 
 These scripts create the single `aliccp_out` dataset consumed by all four models
 in `behavior_and_multi_task`.
