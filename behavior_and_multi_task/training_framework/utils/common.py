@@ -19,6 +19,7 @@ import os
 import shutil
 import json
 from contextlib import nullcontext
+from functools import partial
 
 import torch
 
@@ -114,12 +115,8 @@ class Profiler:
         self.start_iter = self.skip_first + self.warmup
         self.end_iter = self.start_iter + self.activate
 
-    def trace_handler(self, p):
-        profiling_output_dir = os.path.join(
-            self.params.profiling_path, self.params.model, f"bs{self.cur_batch_size}"
-        )
-        if not os.path.exists(profiling_output_dir):
-            os.makedirs(profiling_output_dir, mode=0o750)
+    def trace_handler(self, profiling_output_dir, p):
+        os.makedirs(profiling_output_dir, mode=0o750, exist_ok=True)
         p.export_chrome_trace(
             os.path.join(profiling_output_dir, f"trace_{str(p.step_num)}.json")
         )
@@ -154,7 +151,7 @@ class Profiler:
                 schedule=torch.profiler.schedule(
                     wait=0, warmup=self.warmup, active=self.activate, repeat=1, skip_first=self.skip_first
                 ),  # 与prof.step()配套使用
-                on_trace_ready=self.trace_handler,
+                on_trace_ready=partial(self.trace_handler, profiling_output_dir),
                 # 形状记录
                 record_shapes=True,
                 with_stack=False,
@@ -169,15 +166,18 @@ class Profiler:
                 schedule=torch.profiler.schedule(
                     wait=0, warmup=self.warmup, active=self.activate, repeat=1, skip_first=self.skip_first
                 ),  # 与prof.step()配套使用
-                on_trace_ready=self.trace_handler,
+                on_trace_ready=partial(self.trace_handler, profiling_output_dir),
                 profile_memory=False,
                 with_stack=False,
                 with_modules=False,
                 with_flops=False,
             )
 
-    def get_profiler(self, mode="train", rank=0):
+    def get_profiler(self, mode=None, rank=None):
         profiler = None
+        mode = self.params.mode if mode is None else mode
+        if rank is None:
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else int(os.environ.get("RANK", "0"))
         profiling_output_dir = os.path.join(
             self.params.profiling_path, self.params.model, str(mode), f"rank{rank}_bs{self.cur_batch_size}"
         )

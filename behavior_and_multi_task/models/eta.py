@@ -247,28 +247,30 @@ class ETA(nn.Module):
 
         for key in self.spec["special_fields"]:
             feature_sparse = features.get(key)
-            sparse_marsk = (feature_sparse >= 0).to(torch.float32)[..., None]
+            sparse_mask = (feature_sparse >= 0)[..., None]
             feature_sparse = torch.where(
                 feature_sparse == -1, torch.zeros_like(feature_sparse), feature_sparse
             )
-            sparse_lookup_embedding = (
-                self.emb_weights[key](feature_sparse) * sparse_marsk
-            )
+            sparse_lookup_embedding = self.emb_weights[key](feature_sparse)
+            sparse_lookup_embedding = sparse_lookup_embedding * sparse_mask.to(sparse_lookup_embedding.dtype)
             embeddings[key] = torch.sum(sparse_lookup_embedding, dim=1)[:, None]
         return embeddings, masks
 
     def forward(self, features, mode="train"):
         embeddings, masks = self.embedding_preprocess(features)
+        dense_dtype = self.out_layer.weight.dtype
 
         emb_cats = [
             self.long_emb_padding(field, embeddings, masks)
             for field in self.target_multi_field
         ]
+        attention_targets = {field: embeddings.get(field).to(dense_dtype) for field in self.target_field_name}
+        attention_sequences = [(emb_cat[0].to(dense_dtype), emb_cat[1].to(dense_dtype), emb_cat[2], emb_cat[3]) for emb_cat in emb_cats]
         short_attentions_arr = []
         for _, (emb_cat, target_name) in enumerate(
-            zip(emb_cats, self.target_field_name)
+            zip(attention_sequences, self.target_field_name)
         ):
-            emb_target = embeddings.get(target_name)
+            emb_target = attention_targets.get(target_name)
             emb_short = emb_cat[0]
             mask_short = emb_cat[2]
             short_attentions_arr.append(
@@ -277,22 +279,21 @@ class ETA(nn.Module):
 
         long_attentions_arr = []
         for _, (emb_cat, target_name) in enumerate(
-            zip(emb_cats, self.target_field_name)
+            zip(attention_sequences, self.target_field_name)
         ):
-            emb_target = embeddings.get(target_name)
+            emb_target = attention_targets.get(target_name)
             emb_long = emb_cat[1]
             mask_long = emb_cat[3]
             long_attentions_arr.append(
                 self.long_attention(emb_target, emb_long, mask_long)
             )
 
-        embedding = torch.concat(
+        context_embedding = torch.concat(
             [embeddings.get(field_name) for field_name in self.spec["one_hot_fields"]]
-            + [embeddings.get(field_name) for field_name in self.spec["special_fields"]]
-            + short_attentions_arr
-            + long_attentions_arr,
+            + [embeddings.get(field_name) for field_name in self.spec["special_fields"]],
             dim=-1,
-        )
+        ).to(dense_dtype)
+        embedding = torch.concat([context_embedding] + short_attentions_arr + long_attentions_arr, dim=-1)
 
         x_deep = torch.reshape(embedding, [-1, embedding.shape[-1]])
 
@@ -353,7 +354,7 @@ ETA_DEFAULTS = {
     "hash_bits": 128,
     "topk": 8,
     "extra_fields": 15,
-    "find_unused_parameters": True,
+    "find_unused_parameters": False,
     "model": "eta",
 }
 

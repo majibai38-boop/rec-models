@@ -106,10 +106,9 @@ class LoneAttention(nn.Module):
         self.params = params
         self.attention = MultiHeadAttention(params)
         if self.params.reuse_hash:
-            self.reuse_hash = torch.randn(
-                self.params.embedding_size[-1],
-                self.params.hash_bits,
-            ).to(self.params.device)
+            self.register_buffer("reuse_hash", torch.randn(self.params.embedding_size[-1], self.params.hash_bits).to(self.params.device), persistent=False)
+        else:
+            self.register_buffer("reuse_hash", None, persistent=False)
         self.relu = nn.ReLU()
 
     def lsh_hash(self, vec, rand_rotate):
@@ -228,15 +227,14 @@ class ETA(CurrentETA):
 
         for key in self.spec["special_fields"]:
             feature_sparse = features.get(key)
-            sparse_mask = (feature_sparse >= 0).to(torch.float32)[..., None]
+            sparse_mask = (feature_sparse >= 0)[..., None]
             feature_sparse = torch.where(
                 feature_sparse == -1,
                 torch.zeros_like(feature_sparse),
                 feature_sparse,
             )
-            sparse_lookup_embedding = (
-                self.emb_weights[key](feature_sparse) * sparse_mask
-            )
+            sparse_lookup_embedding = self.emb_weights[key](feature_sparse)
+            sparse_lookup_embedding = sparse_lookup_embedding * sparse_mask.to(sparse_lookup_embedding.dtype)
             embeddings[key] = torch.sum(
                 sparse_lookup_embedding, dim=1
             )[:, None]
@@ -244,16 +242,19 @@ class ETA(CurrentETA):
 
     def forward(self, features, mode="train"):
         embeddings = self.embedding_preprocess(features)
+        dense_dtype = self.out_layer.weight.dtype
 
         self.emb_cats = [
             self.long_emb_padding(field, embeddings, self.masks)
             for field in self.target_multi_field
         ]
+        attention_targets = {field: embeddings.get(field).to(dense_dtype) for field in self.target_field_name}
+        attention_sequences = [(emb_cat[0].to(dense_dtype), emb_cat[1].to(dense_dtype), emb_cat[2], emb_cat[3]) for emb_cat in self.emb_cats]
         short_attentions = []
         for emb_cat, target_name in zip(
-            self.emb_cats, self.target_field_name
+            attention_sequences, self.target_field_name
         ):
-            emb_target = embeddings.get(target_name)
+            emb_target = attention_targets.get(target_name)
             emb_short = emb_cat[0]
             mask_short = emb_cat[2]
             short_attentions.append(
@@ -264,16 +265,16 @@ class ETA(CurrentETA):
 
         long_attentions = []
         for emb_cat, target_name in zip(
-            self.emb_cats, self.target_field_name
+            attention_sequences, self.target_field_name
         ):
-            emb_target = embeddings.get(target_name)
+            emb_target = attention_targets.get(target_name)
             emb_long = emb_cat[1]
             mask_long = emb_cat[3]
             long_attentions.append(
                 self.long_attention(emb_target, emb_long, mask_long)
             )
 
-        embedding = torch.concat(
+        context_embedding = torch.concat(
             [
                 embeddings.get(field_name)
                 for field_name in self.spec["one_hot_fields"]
@@ -281,11 +282,10 @@ class ETA(CurrentETA):
             + [
                 embeddings.get(field_name)
                 for field_name in self.spec["special_fields"]
-            ]
-            + short_attentions
-            + long_attentions,
+            ],
             dim=-1,
-        )
+        ).to(dense_dtype)
+        embedding = torch.concat([context_embedding] + short_attentions + long_attentions, dim=-1)
 
         x_deep = torch.reshape(embedding, [-1, embedding.shape[-1]])
         x_deep = self.deep_layers(x_deep)

@@ -15,6 +15,7 @@
 """Device, distributed training, checkpoint and evaluation lifecycle."""
 
 import collections
+from itertools import islice
 import os
 import re
 import random
@@ -35,6 +36,33 @@ from .utils.capturing_interpreter import to_clean_cpu_tensor
 from .utils.serialization import safe_weights_load
 
 RANDOM_SEED = 42
+MODEL_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+EMBEDDING_TYPES = ("model", *MODEL_DTYPES)
+
+
+def get_model_dtype(model_type):
+    """Resolve the configured floating-point dtype used by model parameters."""
+    try:
+        return MODEL_DTYPES[str(model_type).lower()]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported model_type: {model_type}") from exc
+
+
+def get_embedding_dtype(embedding_type, model_dtype):
+    """Resolve the embedding dtype, optionally inheriting the dense dtype."""
+    if str(embedding_type).lower() == "model":
+        return model_dtype
+    return get_model_dtype(embedding_type)
+
+
+def set_embedding_dtype(model, embedding_dtype):
+    """Convert all embedding tables without changing dense parameters."""
+    embedding_count = 0
+    for module in model.modules():
+        if isinstance(module, (torch.nn.Embedding, torch.nn.EmbeddingBag)):
+            module.to(dtype=embedding_dtype)
+            embedding_count += 1
+    return embedding_count
 
 
 def get_device_type(device):
@@ -108,6 +136,9 @@ def get_params():
             "load_checkpoint": False,
             "save_checkpoint": False,
             "batch_size": 128,
+            "model_type": "float32",
+            "embedding_type": "model",
+            "distributed_strategy": "auto",
             "learning_rate": 0.001,
             "embedding_size": 16,
             "field_size": 39,
@@ -247,7 +278,7 @@ def get_argument(argv, configure_parser=None):
         type=str,
         default="false",
         choices=["true", "false"],
-        help="load best_val.pth from model_dir; disabled by default",
+        help="load checkpoint from model_dir (best_val.pth, or best_val_dmp/ for TorchRec DMP); disabled by default",
     )
     parser.add_argument(
         "--save_checkpoint",
@@ -256,7 +287,7 @@ def get_argument(argv, configure_parser=None):
         type=str,
         default="false",
         choices=["true", "false"],
-        help="save best_val.pth under model_dir; disabled by default",
+        help="save checkpoint under model_dir (best_val.pth, or best_val_dmp/ for TorchRec DMP); disabled by default",
     )
     parser.add_argument(
         "--report_dir",
@@ -267,6 +298,9 @@ def get_argument(argv, configure_parser=None):
 
     parser.add_argument("--num_epochs", type=int, default=1, help="模型训练轮次")
     parser.add_argument("--batch_size", type=int, default=128, help="模型批处理大小")
+    parser.add_argument("--model_type", type=str.lower, default="float32", choices=tuple(MODEL_DTYPES), help="模型参数dtype，可选float32或bfloat16，默认float32")
+    parser.add_argument("--embedding_type", type=str.lower, default="model", choices=EMBEDDING_TYPES, help="Embedding参数dtype，可跟随model_type或设为float32/bfloat16，默认跟随model_type")
+    parser.add_argument("--distributed_strategy", type=str.lower, default="auto", choices=("auto", "ddp", "torchrec_dmp"), help="分布式策略；auto由模型选择，普通模型使用DDP")
     parser.add_argument("--train_stop_step", type=int, default=-1, help="训练模式提前停止step数")
     parser.add_argument("--val_stop_step", type=int, default=-1, help="验证模式提前停止step数")
     parser.add_argument(
@@ -495,7 +529,7 @@ class TestHandler:
                         batches_list.append(self.batch_size)
                         times_range.append(cur_range)
 
-        report = {"Batch_size": bs_str, "model_name": self.params.model}
+        report = {"Batch_size": bs_str, "model_name": self.params.model, "model_type": self.params.model_type, "embedding_type": self.params.embedding_type}
         if self.params.report_dir:
             import pandas as pd
 
@@ -597,6 +631,8 @@ class ModelHandler:
         self.optimizer = None
         self.loss_fn = None
         self.model = None
+        self.distributed_model_adapter = None
+        self.torchrec_train_pipeline = None
         if self.params.mode != "test_qps":
             self.train_loader, self.test_loader, self.val_loader = None, None, None
         self.cur_batch_size = params.batch_size
@@ -714,9 +750,10 @@ class ModelHandler:
             os.path.join(profiling_output_dir, f"trace_{str(p.step_num)}.json")
         )
 
-    def init_model(self):
+    def init_model(self, load_checkpoint=True):
         """Initialize the unwrapped model before DDP and compile wrapping."""
-        self.load_check_point()
+        if load_checkpoint:
+            self.load_check_point()
         logger.info(
             f"*********************compile:{self.params.compile}**********************"
         )
@@ -741,10 +778,46 @@ class ModelHandler:
         return "cuda" in self.params.device or "npu" in self.params.device \
             or "mlu" in self.params.device
 
+    def uses_torchrec_dmp(self):
+        return self.params.get("distributed_strategy", "auto") == "torchrec_dmp"
+
+    def setup_torchrec_dmp(self, rank, device, model_dtype):
+        """Build TorchRec DMP without wrapping it in outer DDP."""
+        adapter = self.model
+        build_distributed = getattr(adapter, "build_distributed", None)
+        if build_distributed is None:
+            raise RuntimeError("The selected model does not implement build_distributed(params, device, dense_dtype)")
+
+        self.distributed_model_adapter = adapter
+        self.loss_fn = adapter.loss
+        self.init_model(load_checkpoint=False)
+        self.model, self.optimizer, plan = build_distributed(self.params, device, model_dtype)
+        if self.params.mode == "train":
+            self.torchrec_train_pipeline = adapter.build_train_pipeline(self.model, self.optimizer, device)
+        if self.params.load_checkpoint:
+            adapter.load_checkpoint(self.model, self.saved_dir)
+            logger.info(f"loaded TorchRec DMP checkpoint from {self.saved_dir}")
+        else:
+            logger.info("checkpoint loading is disabled")
+        if rank == 0:
+            logger.info(f"TorchRec {self.params.torchrec_sharding_strategy} sharding plan:\n{plan}")
+        logger.info(f"[rank: {rank}]: Use TorchRec DistributedModelParallel; dense dtype={model_dtype}, EBC dtype=torch.float32")
+
+    def should_save_torchrec_dmp_checkpoint(self, rank, world_size, improved):
+        if world_size == 1:
+            return improved
+        decision = torch.tensor([int(improved) if rank == 0 else 0], dtype=torch.int32, device=self.params.device)
+        dist.broadcast(decision, src=0)
+        return bool(decision.item())
+
     def run_train_one_epoch(self, rank, epoch):
+        if self.uses_torchrec_dmp():
+            return self.run_torchrec_dmp_train_one_epoch(rank, epoch)
+
         total_loss = 0
         idx = 0
         step = 0
+        warmup = 10
         profiler = Profiler(self.params)
         profiler = profiler.get_profiler(mode="train", rank=rank)
         train_times = []
@@ -772,7 +845,7 @@ class ModelHandler:
                 if rank==0 and step % 10 ==0:
                     logger.info(f"[rank: {rank}]: epoch: {epoch}, step: [{step} / {len(self.train_loader)}], loss: {loss}, time :{(bwd_time - start_time) * 1000} ms/it")
 
-                if idx > 10 or idx > self.params.train_stop_step - 10:
+                if idx > warmup:
                     train_times.append(bwd_time - start_time)
                 # early stop
                 if step == self.params.train_stop_step:
@@ -780,6 +853,48 @@ class ModelHandler:
                                 f"step {self.params.train_stop_step} as specified by --train_stop_step")
                     break
         return total_loss, step, train_times
+
+    def run_torchrec_dmp_train_one_epoch(self, rank, epoch):
+        """Run TorchRec's three-stage H2D/input-dist/compute train pipeline."""
+        if self.torchrec_train_pipeline is None:
+            raise RuntimeError("TorchRec train pipeline was not initialized")
+        total_steps = len(self.train_loader)
+        if 0 < self.params.train_stop_step < total_steps:
+            total_steps = self.params.train_stop_step
+        data_iter = iter(islice(self.train_loader, total_steps))
+        profiler = Profiler(self.params).get_profiler(mode="train", rank=rank)
+        total_loss = torch.zeros((), dtype=torch.float32, device=self.params.device)
+        log_loss = torch.zeros_like(total_loss)
+        train_times = []
+        log_step_times = []
+        step = 0
+        self.model.train()
+        try:
+            with profiler as prof:
+                for step in tqdm(range(1, total_steps + 1), desc=f"[rank: {rank}]: Epoch {epoch + 1}/{self.params.num_epochs} - Train"):
+                    start_time = time.time()
+                    output = self.torchrec_train_pipeline.progress(data_iter)
+                    loss = output["loss"].detach().to(torch.float32)
+                    total_loss.add_(loss)
+                    log_loss.add_(loss)
+                    if self.is_on_device() and self.params.profiling_mode:
+                        prof.step()
+                    step_time = time.time() - start_time
+                    log_step_times.append(step_time)
+                    if step % 10 == 0:
+                        average_step_time_ms = sum(log_step_times) / len(log_step_times) * 1000
+                        average_loss = (log_loss / len(log_step_times)).item()
+                        if rank == 0:
+                            logger.info(f"[rank: {rank}]: epoch: {epoch}, step: [{step} / {total_steps}], average loss of the last 10 steps: {average_loss}, average time of the last 10 steps: {average_step_time_ms:.3f} ms/step")
+                        log_step_times.clear()
+                        log_loss.zero_()
+                    if step > 10 or step > total_steps - 10:
+                        train_times.append(step_time)
+        finally:
+            self.torchrec_train_pipeline.detach()
+        if 0 < self.params.train_stop_step <= len(self.train_loader):
+            logger.info(f"[rank: {rank}]: epoch: {epoch}, Early stopping at step {self.params.train_stop_step} as specified by --train_stop_step")
+        return total_loss.item(), step, train_times
 
     def graph_warmup(self, inputs, mode):
         self.static_inputs = {k: v.clone() for k, v in inputs.items()}
@@ -827,6 +942,9 @@ class ModelHandler:
         return loss.item()
 
     def eval(self, rank, epoch=0):
+        if self.uses_torchrec_dmp():
+            return self.run_torchrec_dmp_eval_loader(self.val_loader, rank, epoch, "eval", self.params.val_stop_step)
+
         total_loss = 0
         self.model.eval()
         with torch.no_grad():
@@ -852,11 +970,48 @@ class ModelHandler:
         logger.info(f"[rank: {rank}]: total loss: {total_loss}")
         return total_loss
 
+    def run_torchrec_dmp_eval_loader(self, loader, rank, epoch, mode, stop_step=-1):
+        """Evaluate with overlapped H2D and sparse input distribution."""
+        total_steps = len(loader)
+        if 0 < stop_step < total_steps:
+            total_steps = stop_step
+        data_iter = iter(islice(loader, total_steps))
+        pipeline = self.distributed_model_adapter.build_eval_pipeline(self.model, self.optimizer, torch.device(self.params.device))
+        profiler = Profiler(self.params).get_profiler(mode=mode, rank=rank)
+        total_loss = torch.zeros((), dtype=torch.float32, device=self.params.device)
+        step = 0
+        self.model.eval()
+        try:
+            with torch.no_grad(), profiler as prof:
+                for step in tqdm(range(1, total_steps + 1), desc=f"[rank: {rank}]: Epoch {epoch + 1}/{self.params.num_epochs} - {mode.title()}"):
+                    output = pipeline.progress(data_iter)
+                    total_loss.add_(output["loss"].detach().to(torch.float32))
+                    if self.is_on_device() and self.params.profiling_mode:
+                        prof.step()
+        finally:
+            pipeline.detach()
+        total_loss_value = total_loss.item()
+        if 0 < stop_step <= len(loader):
+            stop_option = "val_stop_step" if mode == "eval" else f"{mode}_stop_step"
+            logger.info(f"[rank: {rank}]: epoch: {epoch}, Early stopping at step {stop_step} as specified by --{stop_option}")
+        logger.info(f"[rank: {rank}]: evaluated steps: {step}, total loss: {total_loss_value}")
+        return total_loss_value
+
     def test(self, rank, epoch=0):
+        if self.uses_torchrec_dmp():
+            total_loss = self.run_torchrec_dmp_eval_loader(self.test_loader, rank, epoch, "test")
+            report = {"Batch_size": self.params.batch_size, "model_name": self.params.model, "model_type": self.params.model_type, "embedding_type": self.params.embedding_type, "Total Loss": total_loss}
+            if self.params.report_dir:
+                saved_path = os.path.join(self.params.report_dir, self.params.model)
+                save_json(report, saved_path, f"[rank: {rank}]: report_loss.json")
+                logger.info(f"[rank: {rank}]: Report json file saved in {saved_path}")
+            logger.info(report)
+            return
+
         total_loss = 0
         self.model.eval()
 
-        report = {"Batch_size": self.params.batch_size, "model_name": self.params.model}
+        report = {"Batch_size": self.params.batch_size, "model_name": self.params.model, "model_type": self.params.model_type, "embedding_type": self.params.embedding_type}
         with torch.no_grad():
             idx = 0
             profiler = Profiler(self.params)
@@ -912,7 +1067,14 @@ class ModelHandler:
             if 0 < self.params.val_stop_step < val_steps:
                 val_steps = self.params.val_stop_step
             val_loss = val_running_loss / max(val_steps, 1)
-            if saved_path and val_loss < min_val_loss:
+            if saved_path and self.uses_torchrec_dmp():
+                should_save = self.should_save_torchrec_dmp_checkpoint(rank, world_size, val_loss < min_val_loss)
+                if should_save:
+                    min_val_loss = val_loss
+                    self.distributed_model_adapter.save_checkpoint(self.model, self.saved_dir)
+                    if rank == 0:
+                        logger.info(f"saving TorchRec DMP checkpoint to {self.saved_dir}!")
+            elif saved_path and val_loss < min_val_loss:
                 min_val_loss = val_loss
                 if world_size == 1 or rank == 0:
                     checkpoint_model = self.unwrap_model(self.model)
@@ -935,6 +1097,8 @@ class ModelHandler:
             final_results = {
                 'dataset_name': self.params.get("dataset_name", "Ali-CCP"),
                 'batch_size': self.params.batch_size,
+                'model_type': self.params.model_type,
+                'embedding_type': self.params.embedding_type,
                 'epoch': self.params.num_epochs,
                 'step': step,
                 'final_loss': train_losses,
@@ -1079,25 +1243,32 @@ class ModelHandler:
         if self.model is None:
             self.model = self.model_factory(self.params, self.spec)
 
-        self.model = self.model.to(device)
-        self.loss_fn = self.model.loss
-        self.init_model()
+        model_dtype = get_model_dtype(self.params.model_type)
+        if self.uses_torchrec_dmp():
+            self.setup_torchrec_dmp(rank, device, model_dtype)
+        else:
+            embedding_dtype = get_embedding_dtype(self.params.embedding_type, model_dtype)
+            self.model = self.model.to(device=device, dtype=model_dtype)
+            embedding_count = set_embedding_dtype(self.model, embedding_dtype)
+            logger.info(f"[rank: {rank}]: model_type={self.params.model_type}, dense dtype={model_dtype}, embedding_type={self.params.embedding_type}, embedding dtype={embedding_dtype}, embedding modules={embedding_count}")
+            self.loss_fn = self.model.loss
+            self.init_model()
 
-        if world_size > 1:
-            ddp_kwargs = {
-                "broadcast_buffers": False,
-                "find_unused_parameters": bool(
-                    self.params.get("find_unused_parameters", False)
-                ),
-            }
-            if self.device_type != "cpu":
-                ddp_kwargs["device_ids"] = [local_rank]
-            self.model = DDP(self.model, **ddp_kwargs)
-            logger.info(f"[rank: {rank}]: Use torch.nn.parallel.DistributedDataParallel")
+            if world_size > 1:
+                ddp_kwargs = {
+                    "broadcast_buffers": False,
+                    "find_unused_parameters": bool(
+                        self.params.get("find_unused_parameters", False)
+                    ),
+                }
+                if self.device_type != "cpu":
+                    ddp_kwargs["device_ids"] = [local_rank]
+                self.model = DDP(self.model, **ddp_kwargs)
+                logger.info(f"[rank: {rank}]: Use torch.nn.parallel.DistributedDataParallel")
 
-        # Compile the final callable, including DDP communication when enabled.
-        self.set_compile_model()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params.learning_rate)
+            # Compile the final callable, including DDP communication when enabled.
+            self.set_compile_model()
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params.learning_rate)
 
         if self.params["mode"] == "train":
             self.train(rank, world_size)
