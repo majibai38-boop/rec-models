@@ -519,6 +519,10 @@ class AliccpDIEN(nn.Module):
             [embedded * mask for embedded in history_parts], dim=-1
         )
         query = torch.cat(query_parts, dim=-1)
+        dense_dtype = self.dien.output_layer.weight.dtype
+        context = context.to(dense_dtype)
+        query = query.to(dense_dtype)
+        history = history.to(dense_dtype)
         return {"ctr": self.dien(context, query, history, valid_mask)}
 
     def loss(self, predictions, labels):

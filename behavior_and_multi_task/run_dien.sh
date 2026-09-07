@@ -22,6 +22,8 @@ PROFILING_PATH=${PROFILING_PATH:-"${SCRIPT_DIR}/profiling"}
 MODE=${MODE:-train}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
 BATCH_SIZE=${BATCH_SIZE:-4096}
+MODEL_TYPE=${MODEL_TYPE:-float32}
+EMBEDDING_TYPE=${EMBEDDING_TYPE:-model}
 LEARNING_RATE=${LEARNING_RATE:-0.001}
 EMBEDDING_SIZE=${EMBEDDING_SIZE:-32}
 GRU_TYPE=${GRU_TYPE:-GRU}
@@ -79,6 +81,8 @@ torchrun \
   --profiling_path="${PROFILING_PATH}" \
   --num_epochs="${NUM_EPOCHS}" \
   --batch_size="${BATCH_SIZE}" \
+  --model_type="${MODEL_TYPE}" \
+  --embedding_type="${EMBEDDING_TYPE}" \
   --learning_rate="${LEARNING_RATE}" \
   --embedding_size="${EMBEDDING_SIZE}" \
   --hf32=true \
