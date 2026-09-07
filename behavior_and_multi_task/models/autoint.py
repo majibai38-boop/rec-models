@@ -391,6 +391,9 @@ class AliccpAutoInt(nn.Module):
     def forward(self, features: Mapping[str, Tensor], mode: str = "train"):
         del mode
         field_embeddings, linear_logit = self.encoder(features)
+        dense_dtype = self.autoint.output_layer.weight.dtype
+        field_embeddings = field_embeddings.to(dense_dtype)
+        linear_logit = linear_logit.to(dense_dtype)
         return {"ctr": self.autoint(field_embeddings, linear_logit)}
 
     def loss(self, predictions, labels):

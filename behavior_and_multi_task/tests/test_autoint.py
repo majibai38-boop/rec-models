@@ -25,6 +25,7 @@ if torch is not None:
     )
     from behavior_and_multi_task.data_process.aliccp import get_spec
     from behavior_and_multi_task.training_framework.config import AttrDict
+    from behavior_and_multi_task.training_framework.handler import set_embedding_dtype
 
 
 def tiny_spec():
@@ -74,6 +75,15 @@ def tiny_params(**overrides):
 
 @unittest.skipIf(torch is None, "PyTorch is not installed")
 class AutoIntTest(unittest.TestCase):
+    def test_mixed_embedding_bf16_dense_fp32_forward(self):
+        spec = tiny_spec()
+        model = AliccpAutoInt(tiny_params(), spec).to(dtype=torch.float32)
+        self.assertGreater(set_embedding_dtype(model, torch.bfloat16), 0)
+        self.assertTrue(all(module.weight.dtype == torch.bfloat16 for module in model.modules() if isinstance(module, torch.nn.Embedding)))
+        self.assertEqual(model.autoint.output_layer.weight.dtype, torch.float32)
+        features, _ = tiny_batch(spec)
+        self.assertEqual(model(features, "train")["ctr"].dtype, torch.float32)
+
     def test_interacting_layer_attends_within_each_sample(self):
         torch.manual_seed(7)
         layer = InteractingLayer(
