@@ -20,6 +20,8 @@ MODEL_DIR=${MODEL_DIR:-"${SCRIPT_DIR}/checkpoint"}
 LOAD_CHECKPOINT=${LOAD_CHECKPOINT:-false}
 SAVE_CHECKPOINT=${SAVE_CHECKPOINT:-false}
 REPORT_DIR=${REPORT_DIR:-"${SCRIPT_DIR}/reports"}
+RESULTS_DIR=${RESULTS_DIR:-}
+SAMPLE_STATISTICS_NUM=${SAMPLE_STATISTICS_NUM:-10}
 PROFILING_PATH=${PROFILING_PATH:-"${SCRIPT_DIR}/profiling"}
 MODE=${MODE:-train}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
@@ -80,6 +82,8 @@ torchrun \
   --load_checkpoint="${LOAD_CHECKPOINT}" \
   --save_checkpoint="${SAVE_CHECKPOINT}" \
   --report_dir="${REPORT_DIR}" \
+  --results_dir="${RESULTS_DIR}" \
+  --sample_statistics_num="${SAMPLE_STATISTICS_NUM}" \
   --profiling_mode="${OPEN_PROFILING}" \
   --profiling_path="${PROFILING_PATH}" \
   --num_epochs="${NUM_EPOCHS}" \

@@ -214,10 +214,21 @@ benchmark 的 8 层、8 头 attention-only 配置，同时保留 DeepCTR 的一�
 `EMBEDDING_SIZE` 必须能被 `NUM_HEADS` 整除，脚本末尾模型名固定为 `autoint`。
 
 常用环境变量包括 `PREPROCESSED_DATASET`、`MODEL_DIR`、
-`LOAD_CHECKPOINT`、`SAVE_CHECKPOINT`、`REPORT_DIR`、
+`LOAD_CHECKPOINT`、`SAVE_CHECKPOINT`、`REPORT_DIR`、`RESULTS_DIR`、
 `PROFILING_PATH`、`MODE`、`BATCH_SIZE`、`NUM_EPOCHS`、
 `MODEL`、`MODEL_TYPE`、`EMBEDDING_TYPE`、`DISTRIBUTED_STRATEGY`、
-`TRAIN_STOP_STEP` 和 `VAL_STOP_STEP`。脚本末尾的参数会继续传给模块入口。
+`TRAIN_STOP_STEP`、`VAL_STOP_STEP` 和 `SAMPLE_STATISTICS_NUM`。脚本末尾的参数会
+继续传给模块入口。
+
+训练结束后，rank 0 默认参考 DLRM 的结果格式，使用最后 10 个有效 step 保存：
+
+- `../save_results_<设备>/performance_result.txt`：平均延迟和 P90/P95/P99/P99.9；
+- `../save_results_<设备>/precision_result.txt`：训练配置、最终 loss 和验证 loss；
+- `../save_results_<设备>/<模型>/predictions_<模型>_<模式>_<step>.pt`：结构化结果。
+
+这里的 `..` 按仓库的绝对位置解析，因此结果始终位于 `rec-models` 同级目录，和命令
+从哪个工作目录启动无关。可通过 `RESULTS_DIR` 或 `--results_dir` 改写位置，通过
+`SAMPLE_STATISTICS_NUM` 或 `--sample_statistics_num` 调整采样数；设为 `0` 可关闭保存。
 
 Dense/Attention 等非 Embedding 参数类型由 `MODEL_TYPE` 控制，默认 `float32`，也可以
 设为 `bfloat16`。`EMBEDDING_TYPE` 默认是 `model`，表示 Embedding 跟随
