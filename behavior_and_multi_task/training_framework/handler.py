@@ -145,7 +145,6 @@ def get_params():
             "field_size": 39,
             "extra_fields": 0,
             "results_dir": "",
-            "sample_statistics_num": 10,
         }
     )
     return params
@@ -304,14 +303,6 @@ def get_argument(argv, configure_parser=None):
         default="",
         help="训练性能与精度结果目录；默认保存到仓库同级的save_results_<设备>",
     )
-    parser.add_argument(
-        "--sample_statistics_num",
-        "--sample-statistics-num",
-        dest="sample_statistics_num",
-        type=int,
-        default=10,
-        help="用于最终性能统计的末尾step数量；设为0可关闭结果保存",
-    )
 
     parser.add_argument("--num_epochs", type=int, default=1, help="模型训练轮次")
     parser.add_argument("--batch_size", type=int, default=128, help="模型批处理大小")
@@ -341,7 +332,6 @@ def get_opts(argv, params, configure_parser=None):
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
         "embedding_size": args.embedding_size,
-        "sample_statistics_num": args.sample_statistics_num,
     }
 
     range_check_dict = {
@@ -349,7 +339,6 @@ def get_opts(argv, params, configure_parser=None):
         "batch_size": (args.batch_size, 1, 10000),
         "learning_rate": (args.learning_rate, 1e-8, 10),
         "embedding_size": (args.embedding_size, 4, 1024),
-        "sample_statistics_num": (args.sample_statistics_num, 0, 1000000),
     }
 
     check_res = check_positive_range(positive_check_dict, range_check_dict)
@@ -840,7 +829,6 @@ class ModelHandler:
         profiler = Profiler(self.params)
         profiler = profiler.get_profiler(mode="train", rank=rank)
         train_times = []
-        all_step_times = []
         with profiler as prof:
             for inputs, labels in tqdm(
                 self.train_loader,
@@ -848,7 +836,7 @@ class ModelHandler:
             ):
                 if self.is_on_device() and self.params.profiling_mode:
                     prof.step()
-                start_time = time.perf_counter()
+                start_time = time.time()
                 idx += 1
                 step += 1
                 # 前向传播
@@ -861,20 +849,18 @@ class ModelHandler:
                 self.optimizer.step()
                 # 统计信息
                 total_loss += loss.item()
-                bwd_time = time.perf_counter()
+                bwd_time = time.time()
                 if rank==0 and step % 10 ==0:
                     logger.info(f"[rank: {rank}]: epoch: {epoch}, step: [{step} / {len(self.train_loader)}], loss: {loss}, time :{(bwd_time - start_time) * 1000} ms/it")
 
-                step_time = bwd_time - start_time
-                all_step_times.append(step_time)
                 if idx > warmup:
-                    train_times.append(step_time)
+                    train_times.append(bwd_time - start_time)
                 # early stop
                 if step == self.params.train_stop_step:
                     logger.info(f"[rank: {rank}]: epoch: {epoch}, Early stopping at "
                                 f"step {self.params.train_stop_step} as specified by --train_stop_step")
                     break
-        return total_loss, step, train_times or all_step_times
+        return total_loss, step, train_times
 
     def run_torchrec_dmp_train_one_epoch(self, rank, epoch):
         """Run TorchRec's three-stage H2D/input-dist/compute train pipeline."""
@@ -894,14 +880,14 @@ class ModelHandler:
         try:
             with profiler as prof:
                 for step in tqdm(range(1, total_steps + 1), desc=f"[rank: {rank}]: Epoch {epoch + 1}/{self.params.num_epochs} - Train"):
-                    start_time = time.perf_counter()
+                    start_time = time.time()
                     output = self.torchrec_train_pipeline.progress(data_iter)
                     loss = output["loss"].detach().to(torch.float32)
                     total_loss.add_(loss)
                     log_loss.add_(loss)
                     if self.is_on_device() and self.params.profiling_mode:
                         prof.step()
-                    step_time = time.perf_counter() - start_time
+                    step_time = time.time() - start_time
                     log_step_times.append(step_time)
                     if step % 10 == 0:
                         average_step_time_ms = sum(log_step_times) / len(log_step_times) * 1000
@@ -1065,14 +1051,18 @@ class ModelHandler:
         else:
             saved_path = ""
         step = 0
-        all_train_times = []
+        total_train_times = []
         for epoch in range(self.params.num_epochs):
             # 训练阶段
             self.model.train()
             running_loss = 0.0
 
             running_loss, step, train_times = self.run_train_one_epoch(rank, epoch)
-            all_train_times.extend(train_times)
+            if len(train_times) > 0:
+                epoch_avg_time = sum(np.array(train_times)) / len(train_times)
+            else:
+                epoch_avg_time = 0.0
+            total_train_times.append(epoch_avg_time)
             logger.info(f"[rank: {rank}]: epoch: {epoch}, total loss: {running_loss}")
             train_loss = running_loss / max(step, 1)
             train_losses.append(train_loss)
@@ -1110,6 +1100,7 @@ class ModelHandler:
 
         if rank == 0:
             model_name = self.params.model.upper()
+            avg_time = sum(np.array(total_train_times)) / self.params.num_epochs
             final_results = {
                 'dataset_name': self.params.get("dataset_name", "Ali-CCP"),
                 'batch_size': self.params.batch_size,
@@ -1117,7 +1108,8 @@ class ModelHandler:
                 'embedding_type': self.params.embedding_type,
                 'epoch': self.params.num_epochs,
                 'step': step,
-                'final_loss': train_losses[-1] if train_losses else None,
+                'final_loss': train_losses,
+                'ms/step': float(avg_time * 1000),
                 'metrics': {
                     'validation_loss': val_losses[-1] if val_losses else None,
                     'best_validation_loss': min(val_losses) if val_losses else None,
@@ -1126,12 +1118,9 @@ class ModelHandler:
             device_name = get_device_result_name(self.device_type)
             inductor_flag = "INDUCTOR" if self.params.compile else "EAGER"
             model_detail_info = device_name + "_" + model_name + "_" + inductor_flag
-            if self.params.sample_statistics_num > 0 and all_train_times:
-                sample_count = min(
-                    self.params.sample_statistics_num, len(all_train_times)
-                )
+            if total_train_times:
                 saved_results = save_benchmark_results(
-                    latency_seconds=all_train_times[-sample_count:],
+                    latency_seconds=total_train_times,
                     batch_size=self.params.batch_size,
                     model_name=self.params.model,
                     device_type=self.device_type,
@@ -1145,11 +1134,8 @@ class ModelHandler:
                     "Performance and precision results saved in %s",
                     saved_results["performance_path"].parent,
                 )
-            elif self.params.sample_statistics_num > 0:
-                logger.warning("No training latency samples were collected; results were not saved")
-                output_str = model_detail_info + "_" + str(final_results)
-                print(f"The Final Result: {output_str}")
             else:
+                logger.warning("No training latency samples were collected; results were not saved")
                 output_str = model_detail_info + "_" + str(final_results)
                 print(f"The Final Result: {output_str}")
 
