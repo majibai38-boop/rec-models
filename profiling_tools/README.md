@@ -96,11 +96,13 @@ python -m profiling_tools --help
 ## 匹配和限制
 
 1. aten 实例首先按规范化名称和执行顺序对齐，shape、dtype、Module 路径、调用栈和相对位置用于计算置信度。
-2. kernel 优先通过 `External id` 关联到 aten；其次使用 kernel/runtime correlation 和 trace flow。
-3. NPU CSV 优先用 `Task ID + Stream ID` 关联 trace kernel；缺失时按 Stream、名称、顺序和 duration 降级匹配。
-4. `low` 置信度或低 kernel-duration coverage 的结果应人工检查，不应作为严格性能结论。
-5. CUDA Graph、NPU 静态图或编译器大范围融合可能丢失逐 aten 的下发关系。这类数据应加入相同的 `record_function`/NVTX/MSTX 区域，主要查看 `module_statistic.csv`。
-6. 当前实现会将 trace JSON 整体读入内存；超大 trace 建议先只导出一个 step。
+2. kernel 优先通过 `External id` 关联到 aten；其次使用 kernel/runtime correlation 和 trace flow。Ascend flow 允许 Host PID 与 `Ascend Hardware` PID 不同，按 TID/Stream 和时间戳继续关联。
+3. NPU 设备任务同时支持 `cat=kernel` 和 `process_name=Ascend Hardware` + `Task Type=AI_CORE` 等格式。
+4. `kernel_details.csv` 是 NPU kernel 的权威清单：优先用 `Task ID + Stream ID` 关联 trace kernel，缺失时按 Stream、名称、时间和 duration 降级匹配；trace 中完全缺失的 CSV 行会生成 synthetic kernel，再通过 flow 关联 aten。
+5. `summary.json` 中的 `device_process_ids`、`task_type_counts`、`kernel_detail_matched_count` 和 `kernel_detail_synthetic_count` 可用于判断 NPU 数据采用了哪条提取路径。
+6. `low` 置信度或低 kernel-duration coverage 的结果应人工检查，不应作为严格性能结论。
+7. CUDA Graph、NPU 静态图或编译器大范围融合可能丢失逐 aten 的下发关系。这类数据应加入相同的 `record_function`/NVTX/MSTX 区域，主要查看 `module_statistic.csv`。
+8. 当前实现会将 trace JSON 整体读入内存；超大 trace 建议先只导出一个 step。
 
 ## 测试
 

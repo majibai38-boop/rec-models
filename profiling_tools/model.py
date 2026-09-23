@@ -75,8 +75,12 @@ class ParsedProfile:
     selected_step: str
     step_names: List[str]
     total_trace_events: int
+    trace_events: List[TraceEvent] = field(default_factory=list, repr=False)
+    device_process_ids: List[str] = field(default_factory=list)
+    task_type_counts: Dict[str, int] = field(default_factory=dict)
     kernel_detail_count: int = 0
     kernel_detail_matched_count: int = 0
+    kernel_detail_synthetic_count: int = 0
 
 
 @dataclass

@@ -351,8 +351,11 @@ def _profile_summary(profile: ParsedProfile) -> Dict[str, Any]:
         "linked_kernel_count": len(linked),
         "linked_kernel_duration_coverage": linked_duration / total_duration if total_duration else 0.0,
         "kernel_link_methods": dict(link_methods),
+        "device_process_ids": profile.device_process_ids,
+        "task_type_counts": profile.task_type_counts,
         "kernel_detail_count": profile.kernel_detail_count,
         "kernel_detail_matched_count": profile.kernel_detail_matched_count,
+        "kernel_detail_synthetic_count": profile.kernel_detail_synthetic_count,
     }
 
 

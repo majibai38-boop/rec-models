@@ -23,6 +23,33 @@ def complete(name, category, ts, dur, pid, tid, args=None):
 
 
 class CompareProfilesTest(unittest.TestCase):
+    def _write_single_detail(self, path: Path, *, start: int, duration: int) -> None:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "Task ID",
+                    "Stream ID",
+                    "Name",
+                    "Type",
+                    "Accelerator Core",
+                    "Start Time(us)",
+                    "Duration(us)",
+                ],
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "Task ID": "101",
+                    "Stream ID": "3",
+                    "Name": "Slice1",
+                    "Type": "Slice",
+                    "Accelerator Core": "AI_CORE",
+                    "Start Time(us)": str(start),
+                    "Duration(us)": str(duration),
+                }
+            )
+
     def test_bundle_comparison_and_npu_type_mapping(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -302,6 +329,150 @@ class CompareProfilesTest(unittest.TestCase):
                 )
             )
             self.assertEqual(summary["gpu"]["kernel_link_methods"], {"flow": 1})
+
+    def test_ascend_hardware_task_without_kernel_category(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            gpu_trace = root / "gpu.json"
+            npu_trace = root / "npu.json"
+            details = root / "details.csv"
+            device_start = 1_699_529_623_106_750
+
+            gpu_trace.write_text(
+                json.dumps(
+                    {
+                        "traceEvents": [
+                            complete("aten::slice", "cpu_op", 200, 100, 10, 2, {"External id": 1}),
+                            complete("gpu_slice", "kernel", 400, 10, 11, 3, {"External id": 1}),
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            npu_trace.write_text(
+                json.dumps(
+                    {
+                        "traceEvents": [
+                            {
+                                "ph": "M",
+                                "name": "process_name",
+                                "pid": 4,
+                                "tid": 0,
+                                "args": {"name": "Ascend Hardware"},
+                            },
+                            complete("aten::slice", "cpu_op", 200, 100, 1, 2),
+                            {
+                                "ph": "s",
+                                "name": "link1",
+                                "id": 1,
+                                "pid": 1,
+                                "tid": 3,
+                                "ts": 200,
+                                "args": {},
+                            },
+                            {
+                                "ph": "f",
+                                "name": "link1",
+                                "id": 1,
+                                "pid": 1,
+                                "tid": 3,
+                                "ts": device_start,
+                                "args": {},
+                            },
+                            complete(
+                                "Slice1",
+                                "",
+                                device_start,
+                                80,
+                                4,
+                                3,
+                                {"Task Type": "AI_CORE"},
+                            ),
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self._write_single_detail(details, start=device_start, duration=80)
+
+            output = root / "out"
+            summary = compare_profiles(
+                CompareConfig(
+                    gpu_trace=str(gpu_trace),
+                    npu_trace=str(npu_trace),
+                    npu_kernel_details=str(details),
+                    output_dir=str(output),
+                )
+            )
+            self.assertEqual(summary["npu"]["device_process_ids"], ["4"])
+            self.assertEqual(summary["npu"]["kernel_count"], 1)
+            self.assertEqual(summary["npu"]["linked_kernel_count"], 1)
+            self.assertEqual(summary["npu"]["kernel_link_methods"], {"flow": 1})
+            with (output / "matches.csv").open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle))
+            self.assertEqual(row["NPU Kernel Count"], "1")
+            self.assertEqual(row["NPU Kernel Type"], "Slice")
+
+    def test_kernel_details_row_fills_missing_npu_trace_task(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            gpu_trace = root / "gpu.json"
+            npu_trace = root / "npu.json"
+            details = root / "details.csv"
+            device_start = 1_699_529_623_106_750
+            gpu_trace.write_text(
+                json.dumps(
+                    {
+                        "traceEvents": [
+                            complete("aten::slice", "cpu_op", 200, 100, 10, 2, {"External id": 1}),
+                            complete("gpu_slice", "kernel", 400, 10, 11, 3, {"External id": 1}),
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            npu_trace.write_text(
+                json.dumps(
+                    {
+                        "traceEvents": [
+                            complete("aten::slice", "cpu_op", 200, 100, 1, 2),
+                            {
+                                "ph": "s",
+                                "name": "link1",
+                                "id": 1,
+                                "pid": 1,
+                                "tid": 3,
+                                "ts": 200,
+                                "args": {},
+                            },
+                            {
+                                "ph": "f",
+                                "name": "link1",
+                                "id": 1,
+                                "pid": 1,
+                                "tid": 3,
+                                "ts": device_start,
+                                "args": {},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self._write_single_detail(details, start=device_start, duration=80)
+
+            summary = compare_profiles(
+                CompareConfig(
+                    gpu_trace=str(gpu_trace),
+                    npu_trace=str(npu_trace),
+                    npu_kernel_details=str(details),
+                    output_dir=str(root / "out"),
+                )
+            )
+            self.assertEqual(summary["npu"]["kernel_count"], 1)
+            self.assertEqual(summary["npu"]["linked_kernel_count"], 1)
+            self.assertEqual(summary["npu"]["kernel_detail_matched_count"], 0)
+            self.assertEqual(summary["npu"]["kernel_detail_synthetic_count"], 1)
 
 
 if __name__ == "__main__":

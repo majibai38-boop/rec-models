@@ -88,9 +88,13 @@ def _load_trace_events(path: Path) -> Tuple[List[TraceEvent], int]:
     for index, raw in enumerate(raw_events):
         if not isinstance(raw, dict):
             continue
+        phase = str(raw.get("ph", ""))
         timestamp = _safe_float(raw.get("ts"))
         if timestamp is None:
-            continue
+            if phase.upper() == "M":
+                timestamp = 0.0
+            else:
+                continue
         duration = _safe_float(raw.get("dur")) or 0.0
         args = dict(raw.get("args")) if isinstance(raw.get("args"), dict) else {}
         if "id" in raw:
@@ -102,7 +106,7 @@ def _load_trace_events(path: Path) -> Tuple[List[TraceEvent], int]:
                 index=index,
                 name=str(raw.get("name", "")),
                 category=str(raw.get("cat", "")),
-                phase=str(raw.get("ph", "")),
+                phase=phase,
                 timestamp_us=timestamp,
                 duration_us=duration,
                 pid=_normalized_id(raw.get("pid")),
@@ -117,14 +121,47 @@ def _is_complete_event(event: TraceEvent) -> bool:
     return event.phase.upper() == "X" and event.duration_us >= 0
 
 
-def _is_kernel(event: TraceEvent, include_communication: bool) -> bool:
+def _device_process_ids(events: Sequence[TraceEvent]) -> List[str]:
+    result = set()
+    for event in events:
+        if event.phase.upper() != "M" or event.name.lower() != "process_name":
+            continue
+        process_name = str(get_arg(event.args, "name") or "").lower()
+        if "ascend hardware" in process_name or "npu hardware" in process_name:
+            result.add(event.pid)
+    return sorted(result)
+
+
+def _task_type(event: TraceEvent) -> str:
+    return str(get_arg(event.args, "Task Type", "task_type") or "").strip()
+
+
+def _is_communication_event(event: TraceEvent) -> bool:
     category = event.category.lower()
-    if "communication" in category or "nccl" in category or "hccl" in category:
+    task_type = _task_type(event).lower()
+    name = event.name.lower()
+    return any(
+        token in category or token in task_type or token in name
+        for token in ("communication", "nccl", "hccl")
+    )
+
+
+def _is_kernel(
+    event: TraceEvent, include_communication: bool, device_process_ids: Sequence[str]
+) -> bool:
+    if _is_communication_event(event):
         return include_communication
+    category = event.category.lower()
     if "kernel" in category:
         return True
     device_type = str(get_arg(event.args, "Device Type", "device_type") or "").lower()
-    return device_type in {"cuda", "npu", "privateuse1", "xpu"}
+    if device_type in {"cuda", "npu", "privateuse1", "xpu"}:
+        return True
+    # Ascend trace_view.json commonly omits cat="kernel". Device tasks are
+    # instead placed under the "Ascend Hardware" process and carry Task Type.
+    if event.pid in device_process_ids:
+        return bool(_task_type(event)) or event.duration_us > 0
+    return bool(_task_type(event))
 
 
 def _is_context_event(event: TraceEvent) -> bool:
@@ -249,6 +286,105 @@ def _build_starts_by_thread(
     return result
 
 
+def _build_starts_by_pid(
+    ops: Sequence[OpRecord],
+) -> Dict[str, Tuple[List[float], List[int]]]:
+    grouped: Dict[str, List[int]] = defaultdict(list)
+    for index, op in enumerate(ops):
+        grouped[op.event.pid].append(index)
+    result: Dict[str, Tuple[List[float], List[int]]] = {}
+    for pid, indices in grouped.items():
+        indices.sort(key=lambda index: ops[index].event.timestamp_us)
+        result[pid] = ([ops[index].event.timestamp_us for index in indices], indices)
+    return result
+
+
+def _find_containing_from_sorted(
+    ops: Sequence[OpRecord],
+    indexed_ops: Tuple[List[float], List[int]],
+    timestamp_us: float,
+) -> Optional[int]:
+    starts, indices = indexed_ops
+    position = bisect.bisect_right(starts, timestamp_us) - 1
+    best: Optional[int] = None
+    best_duration = float("inf")
+    for cursor in range(position, max(-1, position - 2048), -1):
+        op_index = indices[cursor]
+        event = ops[op_index].event
+        if event.timestamp_us <= timestamp_us <= event.end_us and event.duration_us < best_duration:
+            best = op_index
+            best_duration = event.duration_us
+    return best
+
+
+def _find_containing_op_relaxed(
+    ops: Sequence[OpRecord],
+    starts_by_thread: Mapping[Tuple[str, str], Tuple[List[float], List[int]]],
+    starts_by_pid: Mapping[str, Tuple[List[float], List[int]]],
+    all_starts: Tuple[List[float], List[int]],
+    pid: str,
+    tid: str,
+    timestamp_us: float,
+) -> Optional[int]:
+    exact = _find_containing_op(ops, starts_by_thread, pid, tid, timestamp_us)
+    if exact is not None:
+        return exact
+    same_process = _find_containing_from_sorted(
+        ops, starts_by_pid.get(pid, ([], [])), timestamp_us
+    )
+    if same_process is not None:
+        return same_process
+    return _find_containing_from_sorted(ops, all_starts, timestamp_us)
+
+
+def _build_kernel_start_index(
+    kernels: Sequence[KernelRecord], key_kind: str
+) -> Dict[Any, Tuple[List[float], List[int]]]:
+    grouped: Dict[Any, List[int]] = defaultdict(list)
+    for index, kernel in enumerate(kernels):
+        if key_kind == "thread":
+            key: Any = (kernel.event.pid, kernel.event.tid)
+        elif key_kind == "tid":
+            key = kernel.event.tid
+        else:
+            key = "all"
+        grouped[key].append(index)
+    result: Dict[Any, Tuple[List[float], List[int]]] = {}
+    for key, indices in grouped.items():
+        indices.sort(key=lambda index: kernels[index].event.timestamp_us)
+        result[key] = (
+            [kernels[index].event.timestamp_us for index in indices],
+            indices,
+        )
+    return result
+
+
+def _nearest_kernel(
+    kernels: Sequence[KernelRecord],
+    indexed_kernels: Tuple[List[float], List[int]],
+    timestamp_us: float,
+    tolerance_us: float = 1000.0,
+) -> Optional[int]:
+    starts, indices = indexed_kernels
+    if not starts:
+        return None
+    position = bisect.bisect_left(starts, timestamp_us)
+    candidates = indices[max(0, position - 4) : min(len(indices), position + 5)]
+    if not candidates:
+        return None
+
+    def distance(index: int) -> float:
+        event = kernels[index].event
+        if event.timestamp_us <= timestamp_us <= event.end_us:
+            return 0.0
+        return min(
+            abs(event.timestamp_us - timestamp_us), abs(event.end_us - timestamp_us)
+        )
+
+    best = min(candidates, key=distance)
+    return best if distance(best) <= tolerance_us else None
+
+
 def _choose_external_op(
     candidate_indices: Sequence[int], ops: Sequence[OpRecord], timestamp_us: Optional[float]
 ) -> Optional[int]:
@@ -276,12 +412,21 @@ def _flow_key(value: Any) -> str:
 def _link_kernels_to_ops(
     events: Sequence[TraceEvent], ops: List[OpRecord], kernels: List[KernelRecord]
 ) -> None:
+    for op in ops:
+        op.kernel_indices.clear()
+    for kernel in kernels:
+        kernel.owner_op_index = None
+        kernel.link_method = "unmatched"
+
     external_to_ops: Dict[str, List[int]] = defaultdict(list)
     for index, op in enumerate(ops):
         if op.external_id:
             external_to_ops[op.external_id].append(index)
 
     starts_by_thread = _build_starts_by_thread(ops)
+    starts_by_pid = _build_starts_by_pid(ops)
+    all_indices = sorted(range(len(ops)), key=lambda index: ops[index].event.timestamp_us)
+    all_starts = ([ops[index].event.timestamp_us for index in all_indices], all_indices)
     runtime_by_correlation: Dict[str, List[TraceEvent]] = defaultdict(list)
     for event in events:
         if not _is_complete_event(event):
@@ -292,11 +437,9 @@ def _link_kernels_to_ops(
             if correlation:
                 runtime_by_correlation[correlation].append(event)
 
-    kernel_by_thread: Dict[Tuple[str, str], List[int]] = defaultdict(list)
-    for index, kernel in enumerate(kernels):
-        kernel_by_thread[(kernel.event.pid, kernel.event.tid)].append(index)
-    for indices in kernel_by_thread.values():
-        indices.sort(key=lambda index: kernels[index].event.timestamp_us)
+    kernels_by_thread = _build_kernel_start_index(kernels, "thread")
+    kernels_by_tid = _build_kernel_start_index(kernels, "tid")
+    all_kernels = _build_kernel_start_index(kernels, "all").get("all", ([], []))
 
     flow_starts: Dict[str, List[TraceEvent]] = defaultdict(list)
     flow_finishes: Dict[str, List[TraceEvent]] = defaultdict(list)
@@ -323,18 +466,35 @@ def _link_kernels_to_ops(
     for key, starts in flow_starts.items():
         finishes = flow_finishes.get(key, [])
         for start, finish in zip(sorted(starts, key=lambda event: event.timestamp_us), sorted(finishes, key=lambda event: event.timestamp_us)):
-            op_index = _find_containing_op(
-                ops, starts_by_thread, start.pid, start.tid, start.timestamp_us
+            op_index = _find_containing_op_relaxed(
+                ops,
+                starts_by_thread,
+                starts_by_pid,
+                all_starts,
+                start.pid,
+                start.tid,
+                start.timestamp_us,
             )
             if op_index is None:
                 continue
-            candidates = kernel_by_thread.get((finish.pid, finish.tid), [])
-            if not candidates:
-                continue
-            kernel_index = min(
-                candidates,
-                key=lambda index: abs(kernels[index].event.timestamp_us - finish.timestamp_us),
+            # Ascend flow endpoints are often emitted on a Host PID while the
+            # actual task lives under the "Ascend Hardware" PID. Prefer the
+            # exact thread, then the same TID/stream across PIDs, then time.
+            kernel_index = _nearest_kernel(
+                kernels,
+                kernels_by_thread.get((finish.pid, finish.tid), ([], [])),
+                finish.timestamp_us,
             )
+            if kernel_index is None:
+                kernel_index = _nearest_kernel(
+                    kernels,
+                    kernels_by_tid.get(finish.tid, ([], [])),
+                    finish.timestamp_us,
+                )
+            if kernel_index is None:
+                kernel_index = _nearest_kernel(kernels, all_kernels, finish.timestamp_us)
+            if kernel_index is None:
+                continue
             flow_links[kernel_index] = op_index
 
     for kernel_index, kernel in enumerate(kernels):
@@ -394,6 +554,12 @@ def parse_trace(
 ) -> ParsedProfile:
     trace_path = Path(path)
     events, total_trace_events = _load_trace_events(trace_path)
+    device_process_ids = _device_process_ids(events)
+    task_type_counts: Dict[str, int] = defaultdict(int)
+    for event in events:
+        task_type = _task_type(event)
+        if _is_complete_event(event) and task_type:
+            task_type_counts[task_type] += 1
     selected_pid = _select_pid(events, op_prefix, requested_pid)
     step_window, selected_step, step_names = _find_selected_step(
         events, selected_pid, requested_step
@@ -436,7 +602,9 @@ def parse_trace(
 
     kernels: List[KernelRecord] = []
     for event in events:
-        if not _is_complete_event(event) or not _is_kernel(event, include_communication):
+        if not _is_complete_event(event) or not _is_kernel(
+            event, include_communication, device_process_ids
+        ):
             continue
         kernels.append(
             KernelRecord(
@@ -476,6 +644,9 @@ def parse_trace(
         selected_step=selected_step,
         step_names=step_names,
         total_trace_events=total_trace_events,
+        trace_events=events,
+        device_process_ids=device_process_ids,
+        task_type_counts=dict(task_type_counts),
     )
 
 
@@ -545,14 +716,23 @@ def _detail_kernel_cost(detail: KernelDetail, kernel: KernelRecord) -> float:
 
 def attach_kernel_details(profile: ParsedProfile, details: Sequence[KernelDetail]) -> None:
     profile.kernel_detail_count = len(details)
+    profile.kernel_detail_matched_count = 0
+    profile.kernel_detail_synthetic_count = 0
     unmatched_kernel_indices = set(range(len(profile.kernels)))
+    remaining_details: Dict[int, KernelDetail] = {
+        detail.row_index: detail for detail in details
+    }
+
+    def assign(detail: KernelDetail, kernel_index: int) -> None:
+        profile.kernels[kernel_index].detail = detail
+        unmatched_kernel_indices.discard(kernel_index)
+        remaining_details.pop(detail.row_index, None)
 
     kernels_by_ids: Dict[Tuple[str, str], List[int]] = defaultdict(list)
     for index, kernel in enumerate(profile.kernels):
         if kernel.task_id and kernel.stream_id:
             kernels_by_ids[(kernel.task_id, kernel.stream_id)].append(index)
 
-    unmatched_details: List[KernelDetail] = []
     for detail in details:
         candidates = [
             index
@@ -561,14 +741,11 @@ def attach_kernel_details(profile: ParsedProfile, details: Sequence[KernelDetail
         ]
         if candidates:
             best = min(candidates, key=lambda index: _detail_kernel_cost(detail, profile.kernels[index]))
-            profile.kernels[best].detail = detail
-            unmatched_kernel_indices.remove(best)
-        else:
-            unmatched_details.append(detail)
+            assign(detail, best)
 
     details_by_stream: Dict[str, List[KernelDetail]] = defaultdict(list)
     kernels_by_stream: Dict[str, List[int]] = defaultdict(list)
-    for detail in unmatched_details:
+    for detail in remaining_details.values():
         details_by_stream[detail.stream_id].append(detail)
     for index in unmatched_kernel_indices:
         kernels_by_stream[profile.kernels[index].stream_id].append(index)
@@ -579,8 +756,7 @@ def attach_kernel_details(profile: ParsedProfile, details: Sequence[KernelDetail
         stream_kernels.sort(key=lambda index: profile.kernels[index].event.timestamp_us)
         if len(stream_details) == len(stream_kernels):
             for detail, kernel_index in zip(stream_details, stream_kernels):
-                profile.kernels[kernel_index].detail = detail
-                unmatched_kernel_indices.discard(kernel_index)
+                assign(detail, kernel_index)
             continue
         remaining = set(stream_kernels)
         for detail in stream_details:
@@ -595,10 +771,63 @@ def attach_kernel_details(profile: ParsedProfile, details: Sequence[KernelDetail
             candidates = name_matches or list(remaining)
             best = min(candidates, key=lambda index: _detail_kernel_cost(detail, profile.kernels[index]))
             if _detail_kernel_cost(detail, profile.kernels[best]) <= 4.0:
-                profile.kernels[best].detail = detail
-                unmatched_kernel_indices.discard(best)
+                assign(detail, best)
                 remaining.remove(best)
+
+    # Some Ascend trace variants omit Stream ID or use a different device PID.
+    # Make one final global pass using name, timestamp and duration.
+    for detail in list(remaining_details.values()):
+        if not unmatched_kernel_indices:
+            break
+        name_matches = [
+            index
+            for index in unmatched_kernel_indices
+            if normalize_kernel_name(detail.name)
+            == normalize_kernel_name(profile.kernels[index].event.name)
+        ]
+        candidates = name_matches or list(unmatched_kernel_indices)
+        best = min(candidates, key=lambda index: _detail_kernel_cost(detail, profile.kernels[index]))
+        if _detail_kernel_cost(detail, profile.kernels[best]) <= 4.0:
+            assign(detail, best)
 
     profile.kernel_detail_matched_count = sum(
         kernel.detail is not None for kernel in profile.kernels
     )
+
+    # kernel_details.csv is the authoritative NPU task inventory. If a row has
+    # no trace event, preserve it as a synthetic kernel so bundle counts do not
+    # silently become zero. Flow timestamps can still associate it with aten.
+    synthetic_kernels: List[KernelRecord] = []
+    for detail in remaining_details.values():
+        if detail.start_us is None or detail.duration_us is None:
+            continue
+        args: Dict[str, Any] = {
+            "Task ID": detail.task_id,
+            "Stream ID": detail.stream_id,
+            "Task Type": detail.core_type or detail.op_type,
+            "Synthetic Source": "kernel_details.csv",
+        }
+        synthetic_kernels.append(
+            KernelRecord(
+                event=TraceEvent(
+                    index=-detail.row_index,
+                    name=detail.name or detail.op_type or f"kernel_details_row_{detail.row_index}",
+                    category="kernel_details",
+                    phase="X",
+                    timestamp_us=detail.start_us,
+                    duration_us=detail.duration_us,
+                    pid=f"ascend-hardware:{detail.device_id or 'unknown'}",
+                    tid=detail.stream_id,
+                    args=args,
+                ),
+                task_id=detail.task_id,
+                stream_id=detail.stream_id,
+                detail=detail,
+            )
+        )
+
+    if synthetic_kernels:
+        profile.kernels.extend(synthetic_kernels)
+        profile.kernels.sort(key=lambda kernel: (kernel.event.timestamp_us, kernel.event.index))
+        profile.kernel_detail_synthetic_count = len(synthetic_kernels)
+        _link_kernels_to_ops(profile.trace_events, profile.ops, profile.kernels)
