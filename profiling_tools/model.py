@@ -50,6 +50,12 @@ class KernelRecord:
     detail: Optional[KernelDetail] = None
     owner_op_index: Optional[int] = None
     link_method: str = "unmatched"
+    link_scope: str = ""
+    link_distance_us: Optional[float] = None
+    original_owner_op_index: Optional[int] = None
+    original_link_method: str = ""
+    original_link_scope: str = ""
+    original_link_distance_us: Optional[float] = None
 
 
 @dataclass
@@ -59,8 +65,11 @@ class OpRecord:
     external_id: str = ""
     input_shapes: str = ""
     input_dtypes: str = ""
+    raw_input_shapes: str = ""
+    raw_input_dtypes: str = ""
     call_stack: str = ""
     module_path: str = ""
+    module_key: str = ""
     parent_index: Optional[int] = None
     kernel_indices: List[int] = field(default_factory=list)
 
@@ -78,9 +87,16 @@ class ParsedProfile:
     trace_events: List[TraceEvent] = field(default_factory=list, repr=False)
     device_process_ids: List[str] = field(default_factory=list)
     task_type_counts: Dict[str, int] = field(default_factory=dict)
+    excluded_task_type_counts: Dict[str, int] = field(default_factory=dict)
+    flow_link_diagnostics: Dict[str, Any] = field(default_factory=dict)
     kernel_detail_count: int = 0
     kernel_detail_matched_count: int = 0
     kernel_detail_synthetic_count: int = 0
+    kernel_detail_link_methods: Dict[str, int] = field(default_factory=dict)
+    kernel_owner_reconciliation: Dict[str, Any] = field(default_factory=dict)
+    # Independent namespace: CUDA memcpy/memset are device activities, not
+    # compute kernels. Keeping this separate preserves existing kernel IDs.
+    memory_activities: List[KernelRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -98,6 +114,7 @@ class OpMatch:
     npu_op_index: int
     score: float
     confidence: str
+    alignment_basis: str = "name_sequence"
 
 
 def interval_union_us(intervals: Sequence[Tuple[float, float]]) -> float:

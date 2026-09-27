@@ -1,0 +1,3 @@
+interface:
+  display_name: "GPU/NPU Profiling"
+  short_description: "Compare GPU/NPU traces and investigate coverage gaps"
