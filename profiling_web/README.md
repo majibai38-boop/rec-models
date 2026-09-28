@@ -68,7 +68,7 @@ docker compose --env-file profiling_web/.env -f profiling_web/compose.yaml down
 | `PROFILING_WEB_TOKEN` | 自动生成 | 共享访问令牌，至少 24 字符 |
 | `PROFILING_WEB_UPLOAD_MB` | 1024 | 单个文件上限，单位 MiB |
 | `PROFILING_WEB_STORAGE_MB` | 20480 | 数据目录空间配额，单位 MiB |
-| `PROFILING_WEB_MEMORY_MB` | 8192 | 分析进程 RSS 软限制，单位 MiB |
+| `PROFILING_WEB_MEMORY_MB` | 8192 | 分析进程树 RSS 总和软限制（含子进程，共享页可能重复计入），单位 MiB |
 | `PROFILING_WEB_TIMEOUT` | 1800 | 单次分析/预检查超时，秒 |
 | `PROFILING_WEB_HOSTS` | localhost,127.0.0.1,[::1] | 接受的 HTTP Host，逗号分隔 |
 | `PROFILING_WEB_HTTPS` | 0 | HTTPS 反向代理下设 1，启用 Secure Cookie |

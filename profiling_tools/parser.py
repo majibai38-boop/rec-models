@@ -6,6 +6,7 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -17,7 +18,13 @@ _FLOAT_SUFFIX_RE = re.compile(r"\.0+$")
 
 
 def _normalized_key(value: Any) -> str:
-    return _NORMALIZE_KEY_RE.sub("", str(value).lower())
+    return _normalized_key_text(str(value))
+
+
+@lru_cache(maxsize=4096)
+def _normalized_key_text(value: str) -> str:
+    # Cache field names only, never mutable event args or trace payloads.
+    return _NORMALIZE_KEY_RE.sub("", value.lower())
 
 
 def _normalized_id(value: Any) -> str:
@@ -386,8 +393,8 @@ def _task_type(event: TraceEvent) -> str:
     return str(get_arg(event.args, "Task Type", "task_type") or "").strip()
 
 
-def _is_marker_task(event: TraceEvent) -> bool:
-    task_type = _task_type(event).lower()
+def _is_marker_task(event: TraceEvent, task_type: Optional[str] = None) -> bool:
+    task_type = (_task_type(event) if task_type is None else task_type).lower()
     name = event.name.lower()
     return any(
         token in task_type or token in name
@@ -402,9 +409,9 @@ def _is_marker_task(event: TraceEvent) -> bool:
     )
 
 
-def _is_communication_event(event: TraceEvent) -> bool:
+def _is_communication_event(event: TraceEvent, task_type: Optional[str] = None) -> bool:
     category = event.category.lower()
-    task_type = _task_type(event).lower()
+    task_type = (_task_type(event) if task_type is None else task_type).lower()
     name = event.name.lower()
     return any(
         token in category or token in task_type or token in name
@@ -413,11 +420,13 @@ def _is_communication_event(event: TraceEvent) -> bool:
 
 
 def _is_kernel(
-    event: TraceEvent, include_communication: bool, device_process_ids: Sequence[str]
+    event: TraceEvent, include_communication: bool, device_process_ids: Sequence[str],
+    task_type: Optional[str] = None,
 ) -> bool:
-    if _is_communication_event(event):
+    task_type = _task_type(event) if task_type is None else task_type
+    if _is_communication_event(event, task_type):
         return include_communication
-    if _is_marker_task(event):
+    if _is_marker_task(event, task_type):
         return False
     category = event.category.lower()
     if category in {"gpu_memcpy", "gpu_memset"}:
@@ -430,8 +439,8 @@ def _is_kernel(
     # Ascend trace_view.json commonly omits cat="kernel". Device tasks are
     # instead placed under the "Ascend Hardware" process and carry Task Type.
     if event.pid in device_process_ids:
-        return bool(_task_type(event)) or event.duration_us > 0
-    return bool(_task_type(event))
+        return bool(task_type) or event.duration_us > 0
+    return bool(task_type)
 
 
 def _is_context_event(event: TraceEvent) -> bool:
@@ -1077,11 +1086,18 @@ def parse_trace(
     )
     task_type_counts: Dict[str, int] = defaultdict(int)
     excluded_task_type_counts: Dict[str, int] = defaultdict(int)
+    kernel_events: List[TraceEvent] = []
     for event in events:
-        task_type = _task_type(event)
-        if not (_is_complete_event(event) and task_type and _event_in_window(event, step_window)):
+        if not _is_complete_event(event):
             continue
-        if _is_kernel(event, include_communication, device_process_ids):
+        task_type = _task_type(event)
+        is_kernel = _is_kernel(event, include_communication, device_process_ids, task_type)
+        if is_kernel:
+            # Keep asynchronous kernels outside the CPU step until owner linking.
+            kernel_events.append(event)
+        if not (task_type and _event_in_window(event, step_window)):
+            continue
+        if is_kernel:
             task_type_counts[task_type] += 1
         else:
             excluded_task_type_counts[task_type] += 1
@@ -1127,11 +1143,7 @@ def parse_trace(
     _build_op_hierarchy_and_context(ops, contexts)
 
     kernels: List[KernelRecord] = []
-    for event in events:
-        if not _is_complete_event(event) or not _is_kernel(
-            event, include_communication, device_process_ids
-        ):
-            continue
+    for event in kernel_events:
         stream_id = _normalized_id(
             get_arg(event.args, "Stream Id", "Stream ID", "stream", "stream_id")
         )

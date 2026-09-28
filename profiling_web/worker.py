@@ -51,6 +51,25 @@ def kill_process(process):
     process.wait(timeout=10)
 
 
+def process_tree_rss(parent):
+    """Sum RSS including venv launchers' children; shared pages count per process.
+
+    Exited processes are normal races. AccessDenied propagates so the worker
+    never silently runs an analysis without its configured memory guard.
+    """
+    try:
+        processes = [parent, *parent.children(recursive=True)]
+    except psutil.NoSuchProcess:
+        return 0
+    total = 0
+    for process in processes:
+        try:
+            total += process.memory_info().rss
+        except psutil.NoSuchProcess:
+            pass
+    return total
+
+
 class Worker:
     def __init__(self, settings):
         self.settings = settings.prepare()
@@ -75,7 +94,8 @@ class Worker:
                                     cwd=Path(__file__).resolve().parents[1], stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, env=env,
                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-            write_json(attempt / "process.json", {"pid": proc.pid, "created": psutil.Process(proc.pid).create_time()})
+            monitored_process = psutil.Process(proc.pid)
+            write_json(attempt / "process.json", {"pid": proc.pid, "created": monitored_process.create_time()})
             started = time.monotonic()
             reason, last_stage, last_disk_check = None, None, 0
             try:
@@ -88,11 +108,13 @@ class Worker:
                     elif time.monotonic() - started > self.settings.timeout_seconds:
                         reason = ("failed", "任务超过运行时间上限")
                     try:
-                        memory = psutil.Process(proc.pid).memory_info().rss
+                        memory = process_tree_rss(monitored_process)
                         if memory > self.settings.memory_mb * 1024**2:
                             reason = ("failed", "任务超过内存上限")
                     except psutil.NoSuchProcess:
                         pass
+                    except psutil.AccessDenied:
+                        reason = ("failed", "无法监控分析进程树内存，任务已停止")
                     if time.monotonic() - last_disk_check > 5:
                         write_json(self.settings.data_dir / "worker-heartbeat.json", {"time": time.time()})
                         if disk_usage(self.settings.data_dir) > self.settings.storage_bytes:
