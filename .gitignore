@@ -16,6 +16,10 @@ env/
 build/
 dist/
 *.egg-info/
+node_modules/
+.pnpm-store/
+/profiling_web/data/
+/profiling_web/.env
 
 # Editors and operating systems
 .idea/

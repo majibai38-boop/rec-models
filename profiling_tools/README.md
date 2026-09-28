@@ -1,5 +1,7 @@
 # GPU/NPU Profiling 对比工具
 
+浏览器上传、任务队列、可视化和报告下载，见 [单机 Web 工作台部署指南](../profiling_web/README.md)。原 CLI 和 Skill 接口保持不变。
+
 该工具从 GPU 与 NPU 的 PyTorch Profiler trace 中提取 `aten::` 调用，先规范化 shape、dtype 和 Module，再使用语义锚点与局部执行顺序进行对齐，并把每个 aten 实例直接下发的 device kernel 作为一个 **kernel bundle** 进行比较。NPU 的 `kernel_details.csv` 用于为匹配到的 GPU bundle 补充 NPU `Type`、`Core Type`、shape 和 dtype。
 
 工具不会假设 GPU 与 NPU 的物理 kernel 数量相同：数量相等时会输出顺序映射；数量不等但 bundle 中存在与 aten 同类型的唯一主 kernel 时，会输出 `semantic_primary` 映射并保留完整 bundle；其余情况保留 bundle 级映射，避免伪造逐 kernel 的一一关系。

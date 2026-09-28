@@ -1,0 +1,43 @@
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: profiling_web/Dockerfile
+    image: profiling-workbench:local
+    command: ["python", "-m", "profiling_web", "serve", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment: &environment
+      PROFILING_WEB_DATA: /data
+      PROFILING_WEB_TOKEN: ${PROFILING_WEB_TOKEN:?Set a private token of at least 24 characters}
+      PROFILING_WEB_HOSTS: ${PROFILING_WEB_HOSTS:-localhost,127.0.0.1}
+      PROFILING_WEB_UPLOAD_MB: ${PROFILING_WEB_UPLOAD_MB:-1024}
+      PROFILING_WEB_STORAGE_MB: ${PROFILING_WEB_STORAGE_MB:-20480}
+      PROFILING_WEB_MEMORY_MB: ${PROFILING_WEB_MEMORY_MB:-8192}
+      PROFILING_WEB_TIMEOUT: ${PROFILING_WEB_TIMEOUT:-1800}
+      PROFILING_WEB_HTTPS: ${PROFILING_WEB_HTTPS:-0}
+    volumes:
+      - profiling-data:/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+  worker:
+    image: profiling-workbench:local
+    command: ["python", "-m", "profiling_web", "worker"]
+    environment: *environment
+    volumes:
+      - profiling-data:/data
+    depends_on: [web]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${PROFILING_WEB_WORKER_MEMORY:-10g}
+volumes:
+  profiling-data:

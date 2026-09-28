@@ -40,7 +40,12 @@ class InputSelectionError(ValueError):
         super().__init__("Input scope is ambiguous; run inspect and select PID/step or --all-steps.")
 
 
-def compare_profiles(config: CompareConfig) -> Dict[str, Any]:
+def compare_profiles(config: CompareConfig, *, progress=None) -> Dict[str, Any]:
+    # Optional service adapter hook; no web dependencies in the analysis engine.
+    def stage(name):
+        if progress is not None:
+            progress(name)
+
     validate_threshold(config.diagnostic_coverage_threshold)
     if not math.isfinite(config.flow_tolerance_us) or config.flow_tolerance_us < 0:
         raise ValueError("flow tolerance must be finite and non-negative")
@@ -48,6 +53,7 @@ def compare_profiles(config: CompareConfig) -> Dict[str, Any]:
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("output directory must be new or empty; use a new run directory to preserve previous results")
     started_at = time.perf_counter()
+    stage("inspection")
     manifest = begin_run(config)
     inspection, loaded, details = inspect_inputs(config, retain_data=True)
     if inspection["errors"]:
@@ -55,6 +61,7 @@ def compare_profiles(config: CompareConfig) -> Dict[str, Any]:
     if config.require_explicit_scope and inspection["selections_required"]:
         raise InputSelectionError(inspection)
     inspected_at = time.perf_counter()
+    stage("gpu_parse")
     gpu = parse_trace(
         config.gpu_trace,
         "gpu",
@@ -66,6 +73,7 @@ def compare_profiles(config: CompareConfig) -> Dict[str, Any]:
         trace_data=loaded.pop("gpu"),
     )
     gpu_parsed_at = time.perf_counter()
+    stage("npu_parse")
     npu = parse_trace(
         config.npu_trace,
         "npu",
@@ -77,12 +85,15 @@ def compare_profiles(config: CompareConfig) -> Dict[str, Any]:
         trace_data=loaded.pop("npu"),
     )
     npu_parsed_at = time.perf_counter()
+    stage("detail_link")
     attach_kernel_details(npu, details)
     details_attached_at = time.perf_counter()
+    stage("matching")
     op_map = load_op_map(config.op_map)
     matches, unmatched_gpu, unmatched_npu = match_ops(gpu, npu, op_map)
     matched_at = time.perf_counter()
     assert_inputs_unchanged(manifest)
+    stage("reports")
     summary = write_reports(
         config.output_dir,
         gpu,
@@ -112,6 +123,7 @@ def compare_profiles(config: CompareConfig) -> Dict[str, Any]:
     write_json(output / "run_manifest.json", manifest)
     summary["reports"] = sorted([*summary["reports"], "input_inspection.json", "run_manifest.json", "validation.json"])
     write_json(output / "summary.json", summary)
+    stage("validation")
     validation = validate_results(output)
     summary["validation"] = validation
     summary["warnings"].extend(validation["warnings"])

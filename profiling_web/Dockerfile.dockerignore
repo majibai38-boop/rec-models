@@ -1,0 +1,14 @@
+**
+!profiling_tools/
+!profiling_tools/*.py
+!profiling_web/
+!profiling_web/*.py
+!profiling_web/requirements.lock.txt
+!profiling_web/frontend/
+!profiling_web/frontend/package.json
+!profiling_web/frontend/pnpm-lock.yaml
+!profiling_web/frontend/pnpm-workspace.yaml
+!profiling_web/frontend/vite.config.js
+!profiling_web/frontend/index.html
+!profiling_web/frontend/src/
+!profiling_web/frontend/src/**
