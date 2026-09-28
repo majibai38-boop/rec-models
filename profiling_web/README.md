@@ -118,6 +118,6 @@ profiling_web/.venv/Scripts/python -m unittest discover -s profiling_tools/tests
 profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1:8000 --gpu-trace profiling_tools/example/demo1/gpu/trace.json --npu-trace profiling_tools/example/demo1/npu/trace_view.json --npu-kernel-details profiling_tools/example/demo1/npu/kernel_details.csv --gpu-step 15 --npu-step 15
 ```
 
-已验证：核心 125 项测试、Web 13 项测试、真实 demo1 step 15 HTTP 上传至 Excel 下载全流程，以及前端生产构建。真实数据结果保留原引擎口径（NPU 13987.133 μs、GPU 14242.9 μs）。浏览器登录和页面显示已检查；浏览器文件选择上传因自动审批额度限制未完成，不能视为浏览器端到端验证通过。
+已验证：核心 126 项测试（包括桌面 Excel 所要求的 OOXML 元素顺序）、Web 13 项测试、真实 demo1 step 15 HTTP 上传至 Excel 下载全流程，以及前端生产构建。真实数据结果保留原引擎口径（NPU 13987.133 μs、GPU 14242.9 μs）。浏览器登录和页面显示已检查；浏览器文件选择上传因自动审批额度限制未完成，不能视为浏览器端到端验证通过。
 
 后续扩展边界：暂不支持断点上传、多用户隔离、跨任务缓存、跨轮对比和完整时间线查看。CLI/Skill 不依赖 Web 组件，原有调用方式不变。

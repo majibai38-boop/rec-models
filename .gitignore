@@ -29,22 +29,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Logs, reports, checkpoints, and profiling output
+# Logs and generated profiling output
 *.log
-behavior_and_multi_task/checkpoint/
-behavior_and_multi_task/reports/
-behavior_and_multi_task/profiling/
 infer_result/
-
-# Ali-CCP raw, intermediate, and generated data
-behavior_and_multi_task/data_process/common_features_*.csv
-behavior_and_multi_task/data_process/sample_skeleton_*.csv
-behavior_and_multi_task/data_process/aliccp_out/
-behavior_and_multi_task/data_process/vocabs/
-behavior_and_multi_task/data_process/vocabs_low/
-behavior_and_multi_task/data_process/vocabs_map/
-behavior_and_multi_task/data_process/merged_*.csv
-behavior_and_multi_task/data_process/*_tmp/
 
 # Model and tensor artifacts
 *.ckpt

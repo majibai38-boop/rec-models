@@ -202,8 +202,10 @@ def _worksheet_xml(
         '<sheetFormatPr defaultRowHeight="15"/>'
         f'<cols>{column_xml}</cols>'
         f'<sheetData>{"".join(row_xml)}</sheetData>'
-        f'{merge_xml}'
         f'<autoFilter ref="A1:{last_column}{last_row}"/>'
+        # OOXML requires autoFilter before mergeCells.  Browsers are often
+        # tolerant of the reverse order, but desktop Excel rejects or repairs it.
+        f'{merge_xml}'
         '</worksheet>'
     )
 

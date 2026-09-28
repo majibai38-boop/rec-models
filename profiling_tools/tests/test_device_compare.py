@@ -153,6 +153,19 @@ class DeviceCompareTest(unittest.TestCase):
                 self.assertIn('<v>3</v>', content)
                 self.assertNotIn('<v>99</v>', content)
 
+    def test_excel_compatible_worksheet_element_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'ordered.xlsx'
+            write_grouped_workbook_xlsx(
+                path,
+                [{'Group': 'same', 'Value': 1}, {'Group': 'same', 'Value': 2}],
+                [TableSheet('Types', ('Group', 'Value'), ('Group',), ('Group',))],
+            )
+            with zipfile.ZipFile(path) as archive:
+                root = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+            children = [element.tag.rsplit('}', 1)[-1] for element in root]
+            self.assertLess(children.index('autoFilter'), children.index('mergeCells'))
+
 
 if __name__ == '__main__':
     unittest.main()
