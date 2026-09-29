@@ -296,6 +296,10 @@ def build_coverage_diagnostics(gpu, npu, matches, mapping_rows, *, threshold=90.
     selected = []
     for key, rows in groups.items():
         missing = [r for r in rows if not _flag(r["Comparable"])]
+        # Fully comparable groups have no diagnostic work. Floating-point
+        # 100 * duration / duration can otherwise be slightly below 100.
+        if not missing:
+            continue
         duration = sum(float(r["NPU Duration(us)"]) for r in rows)
         missing_time = sum(float(r["NPU Duration(us)"]) for r in missing)
         count_coverage = 100 * (len(rows) - len(missing)) / len(rows)
@@ -495,10 +499,12 @@ def write_coverage_diagnostics(output, report):
              "| 类型 | Device / Core | 数量覆盖率 | 时间覆盖率 | 未比较数量 | 未比较时间(μs) | 首要排查方向 |",
              "| --- | --- | ---: | ---: | ---: | ---: | --- |"]
     for item in report["types"]:
+        diagnoses = item.get("diagnoses") or []
+        reason = diagnoses[0]["reason"] if diagnoses else "暂无诊断条目（请核对 JSON 证据）"
         lines.append(f"| {_md(item['op_type'])} | {_md(item['device_id'])} / {_md(item['core_type'])} | "
                      f"{_number(item['comparable_count_coverage_pct'])}% | {_number(item['comparable_time_coverage_pct'])}" +
                      ("%" if item['comparable_time_coverage_pct'] is not None else "") +
-                     f" | {item['uncomparable_kernel_count']} | {item['uncomparable_time_us']:.3f} | {_md(item['diagnoses'][0]['reason'])} |")
+                     f" | {item['uncomparable_kernel_count']} | {item['uncomparable_time_us']:.3f} | {_md(reason)} |")
     by_kernel = {r["npu_kernel_index"]: r for r in report["kernels"]}
     for item in report["types"]:
         lines.extend(["", f"## {item['priority_rank']}. {_md(item['op_type'])} ({_md(item['device_id'])} / {_md(item['core_type'])})", ""])

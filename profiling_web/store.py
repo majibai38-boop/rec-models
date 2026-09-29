@@ -17,12 +17,16 @@ class Store:
         self.db = self.root / "tasks.sqlite"
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, name TEXT, status TEXT, stage TEXT,
                 created REAL, updated REAL, started REAL, kind TEXT,
                 attempt TEXT, options TEXT DEFAULT '{}', inputs TEXT DEFAULT '{}',
                 inspection TEXT, summary TEXT, error TEXT DEFAULT '',
                 cancel INTEGER DEFAULT 0, uploading INTEGER DEFAULT 0)""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            if "archived" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def connect(self):
@@ -57,11 +61,34 @@ class Store:
             db.execute("INSERT INTO jobs(id,name,status,stage,created,updated) VALUES(?,?,'uploading','uploading',?,?)", (job_id, name, now, now))
         return self.get(job_id)
 
-    def list(self, offset=0, limit=50):
+    def list(self, offset=0, limit=50, search="", status=None, archived=False):
+        clauses, params = ["archived=?", "instr(lower(name),lower(?))>0"], [int(archived), search]
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = " WHERE " + " AND ".join(clauses)
         with self.connect() as db:
-            total = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-            rows = db.execute("SELECT id,name,status,stage,created,updated,error FROM jobs ORDER BY created DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            total = db.execute("SELECT COUNT(*) FROM jobs" + where, params).fetchone()[0]
+            rows = db.execute("SELECT id,name,status,stage,created,updated,error,archived FROM jobs" + where + " ORDER BY created DESC,id LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
         return {"total": total, "items": [dict(r) for r in rows], "offset": offset, "limit": limit}
+
+    def edit(self, job_id, *, name=None, archived=None):
+        self.get(job_id)
+        fields = {"updated": time.time()}
+        if name is not None:
+            name = name.strip()
+            if not name or len(name) > 120:
+                raise ValueError("任务名称须为 1–120 个字符")
+            fields["name"] = name
+        if archived is not None:
+            fields["archived"] = int(archived)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,uploading FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if archived and (row["status"] in {"queued", "running"} or row["uploading"]):
+                raise Conflict("活动任务不能归档")
+            db.execute("UPDATE jobs SET " + ",".join(k + "=?" for k in fields) + " WHERE id=?", (*fields.values(), job_id))
+        return self.get(job_id)
 
     def update(self, job_id, **fields):
         allowed = {"status", "stage", "kind", "attempt", "options", "inputs", "inspection", "summary", "error", "cancel", "uploading", "started"}

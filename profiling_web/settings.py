@@ -6,6 +6,7 @@ import secrets
 
 @dataclass
 class Settings:
+    auth_mode: str = field(default_factory=lambda: os.environ.get("PROFILING_WEB_AUTH", "token"))
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("PROFILING_WEB_DATA", "profiling_web/data")).resolve())
     token: str = field(default_factory=lambda: os.environ.get("PROFILING_WEB_TOKEN", ""))
     max_upload_bytes: int = field(default_factory=lambda: int(os.environ.get("PROFILING_WEB_UPLOAD_MB", "1024")) * 1024**2)
@@ -21,6 +22,10 @@ class Settings:
         (self.data_dir / "jobs").mkdir(exist_ok=True, mode=0o700)
         if min(self.max_upload_bytes, self.storage_bytes, self.memory_mb, self.timeout_seconds) <= 0:
             raise ValueError("Resource limits must be positive")
+        if self.auth_mode not in {"local", "token"}:
+            raise ValueError("Authentication mode must be local or token")
+        if self.auth_mode == "local":
+            return self
         if not self.token:
             secret = self.data_dir / "access-token"
             try:

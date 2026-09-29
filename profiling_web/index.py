@@ -93,7 +93,7 @@ def build_index(reports, destination):
 
 def query_index(path, *, kind="operators", op_type=None, device_id=None, core_type=None,
                 npu_index=None, search="", coverage_max=None, npu_ratio_min=None,
-                sort="npu_time", offset=0, limit=30, group_id=None, call_id=None, related_type=None):
+                sort="npu_time", offset=0, limit=30, group_id=None, call_id=None, related_type=None, comparison_status=None):
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError("Invalid pagination")
     if kind not in {"operators", "mappings", "diagnoses", "reasons", "calls", "gpu_unmapped", "whole_calls", "call_details"}:
@@ -132,6 +132,23 @@ def query_index(path, *, kind="operators", op_type=None, device_id=None, core_ty
     if search:
         conditions.append("instr(lower(op_type),lower(?))>0")
         params.append(search)
+    if table == "records" and kind in {"reasons", "mappings", "diagnoses"} and (coverage_max is not None or npu_ratio_min is not None):
+        clauses = ["s.op_type=records.op_type", "s.device_id=records.device_id", "s.core_type=records.core_type", "s.row_kind='npu_type'"]
+        for column, operator, value in (("coverage", "<", coverage_max), ("npu_ratio", ">", npu_ratio_min)):
+            if value is not None:
+                clauses.append("s." + column + operator + "?")
+                params.append(value)
+        conditions.append("EXISTS (SELECT 1 FROM stats s WHERE " + " AND ".join(clauses) + ")")
+    if comparison_status:
+        if kind not in {"whole_calls", "call_details"} or comparison_status not in {"comparable", "pending"}:
+            raise ValueError("Invalid comparison status filter")
+        if kind == "whole_calls":
+            field = "Comparable Call Count" if comparison_status == "comparable" else "Pending Call Count"
+            conditions.append('CAST(json_extract(payload, ?) AS REAL)>0')
+            params.append('$."' + field + '"')
+        else:
+            conditions.append("lower(CAST(json_extract(payload, '$.Comparable') AS TEXT)) IN (?,?)")
+            params.extend(("true", "1") if comparison_status == "comparable" else ("false", "0"))
     if table == "stats":
         for column, operator, value in (("coverage", "<", coverage_max), ("npu_ratio", ">", npu_ratio_min)):
             if value is not None:
@@ -142,6 +159,13 @@ def query_index(path, *, kind="operators", op_type=None, device_id=None, core_ty
             raise ValueError("Unknown sorting field")
     else:
         order = "id ASC"
+        if kind in {"whole_calls", "call_details"}:
+            field = "Comparable NPU Time(us)" if kind == "whole_calls" else "NPU Total Time(us)"
+            order = {"npu_time": f"CAST(json_extract(payload, '$.\"{field}\"') AS REAL) DESC",
+                     "ratio": "CAST(NULLIF(json_extract(payload, '$.\"Comparable Ratio(GPU/NPU)\"'), '') AS REAL) DESC",
+                     "name": "op_type ASC"}.get(sort)
+            if order is None:
+                raise ValueError("Unknown call sorting field")
     where = " WHERE " + " AND ".join(conditions)
     # URI is built from a server-owned path, never a request path.
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
@@ -151,3 +175,21 @@ def query_index(path, *, kind="operators", op_type=None, device_id=None, core_ty
         rows = db.execute("SELECT payload FROM " + table + where + " ORDER BY " + order + ",id ASC LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
     return {"total": count, "offset": offset, "limit": limit, "has_more": offset + limit < count,
             "items": [json.loads(r[0]) for r in rows]}
+
+
+def call_evidence(path, call_id, offset=0, limit=200):
+    """Read bounded event evidence for an existing call without reparsing traces."""
+    if not 0 <= offset or not 1 <= limit <= 200:
+        raise ValueError("Invalid pagination")
+    found = query_index(path, kind="call_details", call_id=call_id, limit=1)
+    if not found["items"]:
+        return {"items": [], "total": 0, "event_rows": [], "event_total": 0, "has_more": False}
+    indices = found["items"][0]["NPU Kernel Indices"]
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
+        where = "kind=? AND npu_index IN (SELECT value FROM json_each(?))"
+        total = db.execute("SELECT count(*) FROM records WHERE " + where, ("mappings", indices)).fetchone()[0]
+        rows = db.execute("SELECT payload FROM records WHERE " + where + " ORDER BY npu_index LIMIT ? OFFSET ?", ("mappings", indices, limit, offset)).fetchall()
+        diagnoses = db.execute("SELECT payload FROM records WHERE " + where + " ORDER BY npu_index LIMIT 5", ("diagnoses", indices)).fetchall()
+        diagnostic_count = db.execute("SELECT count(*) FROM records WHERE " + where, ("diagnoses", indices)).fetchone()[0]
+    return {"items": [json.loads(r[0]) for r in diagnoses], "total": diagnostic_count,
+            "event_rows": [json.loads(r[0]) for r in rows], "event_total": total, "has_more": offset + limit < total}

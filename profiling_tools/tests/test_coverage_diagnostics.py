@@ -86,6 +86,33 @@ class CoverageDiagnosticsTest(unittest.TestCase):
                     compare_profiles(config)
                 parse.assert_not_called()
 
+    def test_full_coverage_decimal_durations_at_100(self):
+        fixture = case(("IndexPutV2", "ReduceMax", "Square", "ActualGap"))
+        for row, duration in zip(fixture[3], (84.856, 23.168, 43.251, 0.0)):
+            row["NPU Duration(us)"] = duration
+            row["Comparable"] = row["OP Type"] != "ActualGap"
+        before = copy.deepcopy(fixture)
+        report = self.diagnose(fixture, threshold=100)
+        self.assertEqual(fixture, before)
+        self.assertEqual(report["summary"]["scanned_type_count"], 4)
+        self.assertEqual([t["op_type"] for t in report["types"]], ["ActualGap"])
+        self.assertEqual(report["summary"]["analyzed_kernel_count"], 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            write_coverage_diagnostics(tmp, report)
+            text = (Path(tmp) / "coverage_diagnostics.md").read_text(encoding="utf-8")
+            self.assertIn("ActualGap", text)
+            self.assertNotIn("| IndexPutV2 |", text)
+
+    def test_markdown_tolerates_empty_diagnoses(self):
+        report = self.diagnose()
+        report["types"][0]["diagnoses"] = []
+        before = copy.deepcopy(report)
+        with tempfile.TemporaryDirectory() as tmp:
+            write_coverage_diagnostics(tmp, report)
+            text = (Path(tmp) / "coverage_diagnostics.md").read_text(encoding="utf-8")
+            self.assertIn("暂无诊断条目", text)
+        self.assertEqual(report, before)
+
     def test_duplicate_indices_and_bad_duration_rejected(self):
         fixture = case()
         fixture[3].append(copy.deepcopy(fixture[3][0]))

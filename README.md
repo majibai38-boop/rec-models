@@ -90,9 +90,9 @@ pnpm --dir profiling_web/frontend build
 profiling_web/.venv/Scripts/python -m profiling_web
 ```
 
-然后打开 `http://127.0.0.1:8000`。首次启动会将随机访问令牌保存到 `profiling_web/data/access-token`。
+然后打开 `http://127.0.0.1:8000`。默认本机部署直接进入工作台，无需访问令牌；可用 `--auth token` 显式启用认证。
 
-该服务定位为单机、可信用户共享工作区。持有同一令牌的用户可以访问所有任务；默认只监听本机，不应直接暴露到公网。Docker Compose、资源限制、数据恢复及安全说明见 [profiling_web/README.md](profiling_web/README.md)。
+该服务定位为单机、可信用户共享工作区。本机免令牌模式只允许回环地址直接访问；局域网和容器部署保留令牌认证。支持任务重命名、归档、复用输入、保存视图和调用证据下钻。Docker Compose、资源限制、数据恢复及安全说明见 [profiling_web/README.md](profiling_web/README.md)。
 
 ## 主要输出
 

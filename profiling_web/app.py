@@ -4,8 +4,10 @@ import csv
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import math
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -15,10 +17,10 @@ from urllib.parse import unquote
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .index import downloadable, query_index
+from .index import call_evidence, downloadable, query_index
 from .settings import INPUTS, Settings, disk_usage
 from .store import Conflict, Store
 from .worker import worker_lock
@@ -27,6 +29,27 @@ from .worker import worker_lock
 class JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(default="GPU / NPU comparison", min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value):
+        if not value.strip():
+            raise ValueError("任务名称不能为空")
+        return value.strip()
+
+
+class JobEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
+
+    @model_validator(mode="after")
+    def nonempty(self):
+        if self.name is None and self.archived is None:
+            raise ValueError("请提供名称或归档状态")
+        if self.name is not None:
+            self.name = JobRequest.clean_name(self.name)
+        return self
 
 
 class RunOptions(BaseModel):
@@ -39,6 +62,15 @@ class RunOptions(BaseModel):
     include_communication: bool = False
     diagnostic_coverage_threshold: float = Field(default=90, ge=0, le=100, allow_inf_nan=False)
     flow_tolerance_us: float = Field(default=1000, ge=0, le=1000000, allow_inf_nan=False)
+
+    @field_validator("gpu_step", "npu_step")
+    @classmethod
+    def canonical_step(cls, value):
+        # Profiler labels and kernel_details Step ID use different spellings.
+        # Restrict normalization to the standard label; custom names stay exact.
+        value = value.strip()
+        match = re.fullmatch(r"ProfilerStep#([0-9]+)", value, flags=re.IGNORECASE)
+        return match.group(1) if match else value
 
     @model_validator(mode="after")
     def scope(self):
@@ -107,13 +139,21 @@ def create_app(settings=None):
     async def access(request, call_next):
         path = request.url.path
         if path.startswith("/api/"):
+            if settings.auth_mode == "local":
+                try:
+                    peer_local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+                except ValueError:
+                    peer_local = False
+                if (not peer_local or request.url.hostname not in {"localhost", "127.0.0.1", "::1"}
+                        or any(h in request.headers for h in ("forwarded", "x-forwarded-for", "x-forwarded-host"))):
+                    return JSONResponse({"detail": "免令牌模式仅允许本机直接访问"}, status_code=403)
             bearer = request.headers.get("authorization", "")
-            token_ok = bearer.startswith("Bearer ") and secrets.compare_digest(bearer[7:], settings.token)
+            token_ok = bool(settings.token) and bearer.startswith("Bearer ") and secrets.compare_digest(bearer[7:], settings.token)
             if request.method not in {"GET", "HEAD", "OPTIONS"} and not token_ok:
                 expected = f"{request.url.scheme}://{request.url.netloc}"
                 if request.headers.get("origin") != expected:
                     return JSONResponse({"detail": "Origin 校验失败"}, status_code=403)
-            if path != "/api/session" and not (token_ok or valid_cookie(settings.token, request.cookies.get("profiling_session"))):
+            if settings.auth_mode != "local" and path != "/api/session" and not (token_ok or valid_cookie(settings.token, request.cookies.get("profiling_session"))):
                 return JSONResponse({"detail": "请登录"}, status_code=401)
             length = request.headers.get("content-length")
             try:
@@ -150,6 +190,8 @@ def create_app(settings=None):
 
     @app.post("/api/session")
     def login(body: Login, response: Response):
+        if settings.auth_mode == "local":
+            return {"authenticated": True, "auth_mode": "local"}
         if not secrets.compare_digest(body.token, settings.token):
             raise HTTPException(401, "访问令牌错误")
         response.set_cookie("profiling_session", session_cookie(settings.token, int(time.time()) + 28800),
@@ -169,11 +211,19 @@ def create_app(settings=None):
             heartbeat = 0
         return {"max_upload_bytes": settings.max_upload_bytes, "storage_bytes": settings.storage_bytes,
                 "timeout_seconds": settings.timeout_seconds, "memory_mb": settings.memory_mb,
-                "worker_online": time.time() - heartbeat < 15, "workspace_mode": "shared", "concurrency": 1}
+                "worker_online": time.time() - heartbeat < 15, "workspace_mode": "shared", "concurrency": 1,
+                "auth_mode": settings.auth_mode}
+
+    @app.get("/api/health")
+    def health():
+        with store.connect() as db:
+            counts = dict(db.execute("SELECT status,count(*) FROM jobs GROUP BY status").fetchall())
+        return {**config(), "storage_used_bytes": disk_usage(settings.data_dir), "tasks": counts}
 
     @app.get("/api/jobs")
-    def jobs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
-        return store.list(offset, limit)
+    def jobs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+             search: str = Query("", max_length=120), status: str | None = None, archived: bool = False):
+        return store.list(offset, limit, search, status, archived)
 
     @app.post("/api/jobs", status_code=201)
     def create(body: JobRequest):
@@ -182,6 +232,46 @@ def create_app(settings=None):
     @app.get("/api/jobs/{job_id}")
     def get(job_id: str):
         return store.get(job_id)
+
+    @app.patch("/api/jobs/{job_id}")
+    def edit(job_id: str, body: JobEdit):
+        return store.edit(job_id, name=body.name, archived=body.archived)
+
+    @app.post("/api/jobs/{job_id}/clone", status_code=201)
+    async def clone(job_id: str):
+        # Serialize with uploads/deletion. Copies are independent: deleting the
+        # original cannot invalidate a clone, and no arbitrary path is accepted.
+        async with upload_lock:
+            source = store.get(job_id)
+            if source["status"] in {"uploading", "queued", "running"} or source["uploading"] or set(source["inputs"] or {}) != set(INPUTS):
+                raise Conflict("请等待输入冻结且任务结束后再复用")
+            needed = sum(item["size"] for item in source["inputs"].values())
+            if await asyncio.to_thread(disk_usage, settings.data_dir) + needed > settings.storage_bytes:
+                raise HTTPException(507, "复用输入所需空间不足，请先清理任务")
+            copied = store.create((source["name"][:112] + " · 新运行")[:120])
+            def copy_inputs():
+                for role, filename in INPUTS.items():
+                    origin = store.path(job_id) / "inputs" / filename
+                    if origin.is_symlink() or not origin.is_file():
+                        raise Conflict("源输入不可用")
+                    destination = store.path(copied["id"]) / "inputs" / filename
+                    digest, size = hashlib.sha256(), 0
+                    with origin.open("rb") as reader, destination.open("xb") as writer:
+                        while chunk := reader.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > source["inputs"][role]["size"]:
+                                raise Conflict("源输入大小已改变，请重新上传")
+                            digest.update(chunk)
+                            writer.write(chunk)
+                    if size != source["inputs"][role]["size"] or digest.hexdigest() != source["inputs"][role]["sha256"]:
+                        raise Conflict("源输入校验失败，请重新上传")
+            try:
+                await asyncio.to_thread(copy_inputs)
+                store.update(copied["id"], inputs=source["inputs"])
+                return store.enqueue(copied["id"], "inspect", source["options"])
+            except Exception:
+                store.update(copied["id"], status="failed", error="输入复用失败，可删除此任务释放空间")
+                raise
 
     @app.delete("/api/jobs/{job_id}")
     async def delete_job(job_id: str, confirm: bool = False):
@@ -263,12 +353,14 @@ def create_app(settings=None):
                 npu_ratio_min: float | None = Query(None, ge=0, le=100, allow_inf_nan=False),
                 group_id: str | None = Query(None, max_length=120), call_id: str | None = Query(None, max_length=120),
                 related_type: str | None = Query(None, max_length=200),
+                comparison_status: str | None = Query(None, pattern="^(comparable|pending)$"),
                 sort: str = "npu_time", offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=200)):
         _, root = result_paths(job_id)
         try:
             return query_index(root / "index.sqlite", kind=kind, op_type=op_type, device_id=device_id, core_type=core_type,
                                npu_index=npu_index, search=search, coverage_max=coverage_max, npu_ratio_min=npu_ratio_min,
-                               sort=sort, offset=offset, limit=limit, group_id=group_id, call_id=call_id, related_type=related_type)
+                               sort=sort, offset=offset, limit=limit, group_id=group_id, call_id=call_id, related_type=related_type,
+                               comparison_status=comparison_status)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -284,6 +376,12 @@ def create_app(settings=None):
             return StreamingResponse(csv_download(path), media_type="text/csv; charset=utf-8",
                                      headers={"Content-Disposition": f'attachment; filename="{name}"'})
         return FileResponse(path, filename=name)
+
+    @app.get("/api/jobs/{job_id}/call-evidence")
+    def evidence(job_id: str, call_id: str = Query(..., max_length=120),
+                 offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=200)):
+        _, root = result_paths(job_id)
+        return call_evidence(root / "index.sqlite", call_id, offset, limit)
 
     static = Path(__file__).parent / "frontend" / "dist"
     if (static / "assets").is_dir():
