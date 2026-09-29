@@ -16,6 +16,7 @@ from .device_compare import (
     build_cpu_bundle_rows, summarize_cpu_bundles,
 )
 from .precision_analysis import build_precision_rows
+from .whole_calls import build_whole_calls, summarize_whole_calls, annotate_type_calls
 from .comparison_accounting import add_coverage_conclusions, complete_gpu_accounting
 from .coverage_diagnostics import (
     build_coverage_diagnostics, write_coverage_diagnostics, validate_threshold,
@@ -1724,6 +1725,11 @@ def write_reports(
         threshold=diagnostic_coverage_threshold, precision_rows=precision_rows,
         cpu_bundle_rows=cpu_bundle_rows, fused_rows=fused_op_mapping_rows, op_map=op_map,
     )
+    whole_call_rows = build_whole_calls(gpu, npu, matches, npu_kernel_mapping_rows,
+                                      cpu_bundle_rows, fused_op_mapping_rows, op_map)
+    whole_statistic_rows = summarize_whole_calls(whole_call_rows, gpu, npu)
+    annotate_type_calls(npu_gpu_statistic_rows, npu_kernel_mapping_rows, whole_call_rows,
+                        precision_rows, coverage_diagnostics)
     add_coverage_conclusions(npu_gpu_statistic_rows, coverage_diagnostics)
     npu_gpu_statistic_rows, gpu_unmapped_rows, gpu_accounting = complete_gpu_accounting(
         gpu, npu_kernel_mapping_rows, npu_gpu_statistic_rows,
@@ -1760,6 +1766,8 @@ def write_reports(
         "cpu_bundle_mapping.csv": cpu_bundle_rows,
         "cpu_bundle_statistic.csv": cpu_bundle_statistic_rows,
         "gpu_unmapped_activity.csv": gpu_unmapped_rows,
+        "whole_call_mapping.csv": whole_call_rows,
+        "whole_call_statistic.csv": whole_statistic_rows,
     }
     for filename, rows in reports.items():
         fieldnames = list(rows[0].keys()) if rows else {
@@ -1801,6 +1809,8 @@ def write_reports(
             "gpu_memory_activity.csv": ["GPU Memory Activity Index", "Activity Kind", "Name"],
             "cpu_bundle_mapping.csv": ["CPU Bundle ID", "CPU Bundle"],
             "cpu_bundle_statistic.csv": ["CPU Bundle", "Call Count"],
+            "whole_call_mapping.csv": ["Call ID", "Group ID", "Whole OP"],
+            "whole_call_statistic.csv": ["Group ID", "Whole OP"],
             "gpu_unmapped_activity.csv": ["GPU Activity Kind", "GPU Activity Index", "GPU Name", "GPU Duration(us)",
                                           "GPU PID", "GPU TID", "GPU CPU OP Index", "GPU CPU OP Name",
                                           "GPU Link Method", "Status", "Whole Call References"],
@@ -1826,12 +1836,28 @@ def write_reports(
         "FUSED_OP_GPU_TYPE",
     )
     merge_columns = ("FUSED_OP_NPU_TYPE", "FUSED_OP_GPU_TYPE")
+    call_positions = {r["Call ID"]: i + 2 for i, r in enumerate(whole_call_rows)}
+    group_positions = {r["Group ID"]: i + 2 for i, r in enumerate(whole_statistic_rows)}
+    type_links = {}
+    for i, row in enumerate(npu_gpu_statistic_rows):
+        call_ids = json.loads(row.get("Whole Call IDs") or "[]")
+        if call_ids:
+            type_links[(i, "Related Whole OPs")] = f"'调用明细'!A{call_positions[call_ids[0]]}"
+    whole_links = {(i, "Whole OP"): f"'调用明细'!A{call_positions[json.loads(r['Call IDs'])[0]]}"
+                   for i, r in enumerate(whole_statistic_rows)}
+    detail_links = {(i, "Whole OP"): f"'整体对比'!A{group_positions[r['Group ID']]}"
+                    for i, r in enumerate(whole_call_rows)}
+    display_type_rows = [dict(r) for r in npu_gpu_statistic_rows]
+    for row in display_type_rows:
+        if row.get("Row Kind") == "npu_type" and not row.get("Comparable NPU Kernel Count"):
+            row["Comparable Ratio(GPU/NPU)"] = ""
+            row["Total Time Ratio(GPU/NPU)"] = ""
     write_grouped_workbook_xlsx(
         output / "npu_gpu_op_statistic.xlsx",
-        npu_gpu_statistic_rows,
+        display_type_rows,
         [
             TableSheet(
-                "总览",
+                "类型对比",
                 identity_columns
                 + (
                     "NPU Kernel Count",
@@ -1846,10 +1872,25 @@ def write_reports(
                     "Total Time Ratio(GPU/NPU)",
                     "GPU Kernel Count",
                     "排查结论",
+                    "Whole Comparison Status",
+                    "Related Whole OPs",
                 ),
                 group_key_columns,
                 merge_columns,
-                wrap_columns=("OP Type", "排查结论"),
+                wrap_columns=("OP Type", "排查结论", "Related Whole OPs"), links=type_links,
+            ),
+            TableSheet(
+                "整体对比",
+                ("Whole OP", "Device_id", "NPU Types", "GPU Composition", "Comparable Call Count",
+                 "Comparable NPU Time(us)", "Comparable GPU Time(us)", "Comparable Ratio(GPU/NPU)",
+                 "Total Time Ratio(GPU/NPU)", "Comparison Status", "Population Status", "Scope",
+                 "Observed Call Count", "Pending Call Count", "Overlapping Call Count",
+                 "NPU Population Call Count", "GPU Population Call Count", "NPU Population Time(us)", "GPU Population Time(us)", "Group ID", "Call IDs"),
+                rows=whole_statistic_rows, freeze_columns=1,
+                wrap_columns=("NPU Types", "GPU Composition", "Population Status", "Scope"),
+                hidden_columns=("Observed Call Count", "Pending Call Count", "Overlapping Call Count",
+                                "NPU Population Call Count", "GPU Population Call Count", "NPU Population Time(us)", "GPU Population Time(us)", "Group ID", "Call IDs"),
+                links=whole_links,
             ),
             TableSheet(
                 "覆盖率诊断",
@@ -1868,12 +1909,29 @@ def write_reports(
                     "Accounted Time Coverage(%)",
                     "Unmapped NPU Kernel Count",
                     "Mapping Mode Counts",
+                    "CPU Alignment Status",
+                    "Kernel Comparison Status",
+                    "Whole Comparison Status",
+                    "Related Whole OPs",
                     "排查结论",
                     "排查建议",
                 ),
                 group_key_columns,
                 merge_columns,
-                wrap_columns=("OP Type", "排查结论", "排查建议"),
+                wrap_columns=("OP Type", "排查结论", "排查建议", "CPU Alignment Status", "Kernel Comparison Status"),
+                links=type_links,
+            ),
+            TableSheet(
+                "调用明细",
+                ("Call ID", "Whole OP", "NPU Types", "GPU Composition", "CPU Alignment Status",
+                 "Kernel Comparison Status", "NPU Total Time(us)", "GPU Kernel Time(us)", "GPU Memory Time(us)",
+                 "GPU Total Time(us)", "Comparable Ratio(GPU/NPU)", "Issues", "Overlap Call IDs",
+                 "NPU CPU OP Index", "GPU CPU OP Index", "NPU Kernel Indices", "GPU Kernel Indices",
+                 "GPU Memory Activity Indices", "NPU Kernel Names", "GPU Kernel Names", "GPU Memory Activity Names",
+                 "Alignment Basis", "Source", "Scope", "Group ID"), rows=whole_call_rows,
+                freeze_columns=2, links=detail_links,
+                wrap_columns=("NPU Types", "GPU Composition", "Issues", "Scope"),
+                hidden_columns=("NPU Kernel Names", "GPU Kernel Names", "GPU Memory Activity Names", "Group ID"),
             ),
             TableSheet(
                 "耗时分布",
@@ -1896,14 +1954,6 @@ def write_reports(
                 group_key_columns,
                 merge_columns,
                 wrap_columns=("OP Type",),
-            ),
-            TableSheet(
-                "整体算子",
-                ("CPU Bundle", "Call Count", "NPU Types", "NPU Kernel Count",
-                 "GPU Kernel Count", "GPU Memory Activity Count", "NPU Total Time(us)",
-                 "GPU Kernel Time(us)", "GPU Memory Time(us)", "GPU Total Time(us)",
-                 "Comparable Ratio(GPU/NPU)", "Scope"),
-                rows=cpu_bundle_statistic_rows,
             ),
         ],
     )

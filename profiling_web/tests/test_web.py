@@ -72,6 +72,10 @@ class WebTest(unittest.TestCase):
         result = self.client.get(f"/api/jobs/{job_id}/results", params={"search": "Add", "limit": 1}).json()
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["comparable_ratio_gpu_npu"], .5)
+        for kind in ('whole_calls', 'call_details'):
+            response = self.client.get(f"/api/jobs/{job_id}/results", params={"kind": kind, "related_type": "Add"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['items'], [])
         with patch("profiling_tools.parser._load_trace_events", side_effect=AssertionError("must not reparse")), patch("profiling_web.index.csv_rows", side_effect=AssertionError("must use index")):
             records = self.client.get(f"/api/jobs/{job_id}/results", params={"kind": "mappings", "op_type": "Add"}).json()
             self.assertEqual(records["total"], 1)

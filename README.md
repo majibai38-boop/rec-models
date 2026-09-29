@@ -96,7 +96,7 @@ profiling_web/.venv/Scripts/python -m profiling_web
 
 ## 主要输出
 
-- `npu_gpu_op_statistic.xlsx`：总览、覆盖率诊断、耗时分布和整体算子四个页签；
+- `npu_gpu_op_statistic.xlsx`：类型对比、整体对比、覆盖率诊断、调用明细和耗时分布五个页签；
 - `npu_gpu_op_statistic.csv`：完整类型级统计；
 - `npu_kernel_gpu_mapping.csv`：NPU kernel 到 CPU op/GPU 活动的逐项证据；
 - `coverage_diagnostic.md`：低覆盖率类型的通用排查报告；

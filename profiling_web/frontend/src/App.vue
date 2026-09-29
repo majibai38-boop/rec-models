@@ -1,22 +1,24 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, ref, reactive, watch } from 'vue'
 import Chart from './Chart.vue'
+import WholeCallTable from './WholeCallTable.vue'
 const logged = ref(false), token = ref(''), error = ref(''), busy = ref(false), config = ref({})
 const jobs = ref([]), job = ref(null), tab = ref('overview'), name = ref(''), files = reactive({}), uploading = ref(''), uploadPercent = ref(0)
+const callFilter = ref({})
 const rows = ref([]), chartRows = ref([]), total = ref(0), page = ref(0), search = ref(''), sort = ref('npu_time'), hotspot = ref(false)
 const detail = ref(null), evidence = ref(null), scope = ref(null), records = ref([]), recordTotal = ref(0), recordPage = ref(0), recordKind = ref('reasons')
 const options = reactive({ gpu_pid: '', npu_pid: '', gpu_step: '', npu_step: '', all_steps: false, diagnostic_coverage_threshold: 90, include_communication: false })
 const roles = [{ key: 'gpu_trace', title: 'GPU trace', hint: 'PyTorch profiler · JSON', accept: '.json' }, { key: 'npu_trace', title: 'NPU trace', hint: 'Ascend trace_view · JSON', accept: '.json' }, { key: 'npu_kernel_details', title: 'NPU kernel details', hint: 'kernel_details · CSV', accept: '.csv' }]
 const labels = { uploading: '等待上传', queued: '排队中', running: '分析中', needs_selection: '等待确认范围', succeeded: '分析完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', inspection: '输入预检查', gpu_parse: '解析 GPU trace', npu_parse: '解析 NPU trace', detail_link: '关联 NPU 明细', matching: '匹配 CPU / kernel', reports: '生成报告', validation: '校验计时与映射', indexing: '构建查询索引', starting: '启动分析进程' }
-const tabs = [['overview', '总览'], ['coverage', '覆盖率诊断'], ['distribution', '耗时分布'], ['calls', '整体算子']]
+const tabs = [['overview', '类型对比'], ['whole', '整体对比'], ['coverage', '覆盖率诊断'], ['calls', '调用明细'], ['distribution', '耗时分布']]
 const summary = computed(() => job.value?.summary)
 const overall = computed(() => summary.value?.overall_statistics?.[0])
 const active = computed(() => ['running', 'queued'].includes(job.value?.status))
 const selectable = computed(() => job.value?.inspection && ['needs_selection', 'failed', 'cancelled', 'interrupted'].includes(job.value?.status))
 const elapsed = ref(0)
 let timer, loading = false, selectionSequence = 0, resultsSequence = 0, recordsSequence = 0
-const fmt = (v, n = 2) => v == null ? '—' : Number(v).toLocaleString('en-US', { maximumFractionDigits: n })
-const ratioClass = v => v == null ? '' : v >= 2 ? 'ratio-dark' : v >= 1 ? 'ratio-light' : 'ratio-yellow'
+const fmt = (v, n = 2) => v == null || v === '' ? '—' : Number(v).toLocaleString('en-US', { maximumFractionDigits: n })
+const ratioClass = v => v == null || v === '' ? '' : v >= 2 ? 'ratio-dark' : v >= 1 ? 'ratio-light' : 'ratio-yellow'
 const filesize = v => `${fmt(v / 1024 ** 2, 1)} MB`
 async function api(path, method = 'GET', body) {
   const response = await fetch('/api' + path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -33,7 +35,7 @@ async function select(id) {
   const next = await api('/jobs/' + id)
   if (sequence !== selectionSequence) return
   job.value = next; localStorage.setItem('profiling-job', id); page.value = 0; recordPage.value = 0; scope.value = null; detail.value = null; evidence.value = null; records.value = []; rows.value = []; chartRows.value = []
-  Object.keys(files).forEach(k => delete files[k]); search.value = ''; hotspot.value = false
+  Object.keys(files).forEach(k => delete files[k]); search.value = ''; hotspot.value = false; callFilter.value = {}
   Object.assign(options, { gpu_pid: '', npu_pid: '', gpu_step: '', npu_step: '', all_steps: false }, next.options || {})
   for (const side of ['gpu', 'npu']) { const list = candidates(side); if (!options[side + '_pid'] && list.length === 1) options[side + '_pid'] = list[0].pid }
   if (next.status === 'succeeded') await loadResults()
@@ -65,26 +67,28 @@ async function loadResults() {
   const [data, chart] = await Promise.all([api(resultUrl(params)), api(resultUrl({ ...params, sort: 'npu_time', limit: 200, offset: 0 }))])
   if (job.value?.id !== id || sequence !== resultsSequence) return
   rows.value = data.items; total.value = data.total; chartRows.value = chart.items.filter(x => x.row_kind === 'npu_type')
-  if (['coverage', 'calls', 'distribution'].includes(tab.value)) await loadRecords()
+  if (['whole', 'coverage', 'calls', 'distribution'].includes(tab.value)) await loadRecords()
 }
 async function loadRecords() {
   if (job.value?.status !== 'succeeded') return
   const id = job.value.id
   const sequence = ++recordsSequence
-  const kind = tab.value === 'calls' ? 'calls' : tab.value === 'distribution' ? 'gpu_unmapped' : recordKind.value
-  const filters = tab.value === 'coverage' && scope.value ? scope.value : {}
+  const kind = tab.value === 'whole' ? 'whole_calls' : tab.value === 'calls' ? 'call_details' : tab.value === 'distribution' ? 'gpu_unmapped' : recordKind.value
+  const filters = ['whole', 'calls'].includes(tab.value) ? callFilter.value : tab.value === 'coverage' && scope.value ? scope.value : {}
   const result = await api(resultUrl({ kind, ...filters, offset: recordPage.value * 20, limit: 20 }))
   if (job.value?.id !== id || sequence !== recordsSequence) return
   records.value = result.items; recordTotal.value = result.total
 }
 async function openType(row) { scope.value = { op_type: row.op_type, device_id: row.device_id, core_type: row.core_type }; tab.value = 'coverage'; recordPage.value = 0; recordKind.value = 'reasons'; await action(loadRecords) }
+async function openWhole(row) { callFilter.value = { related_type: row.op_type, device_id: row.device_id, core_type: row.core_type }; tab.value = 'whole'; recordPage.value = 0; await action(loadRecords) }
+async function openCallGroup(row) { callFilter.value = { group_id: row['Group ID'] }; tab.value = 'calls'; recordPage.value = 0; await action(loadRecords) }
 async function showRecord(record) {
   detail.value = record; evidence.value = null
   const index = record['NPU Kernel Index'] ?? record.npu_kernel_index
   if (index !== undefined) await action(async () => { evidence.value = await api(resultUrl({ kind: 'diagnoses', npu_index: index, limit: 5 })) })
 }
 function download(name) { return `/api/jobs/${job.value.id}/artifacts/${encodeURIComponent(name)}` }
-async function switchTab(value) { tab.value = value; recordPage.value = 0; await action(loadRecords) }
+async function switchTab(value) { tab.value = value; recordPage.value = 0; callFilter.value = {}; await action(loadRecords) }
 async function filter() { page.value = 0; await action(loadResults) }
 function clickedChart(p) { const row = chartRows.value.find(x => `${x.op_type} · ${x.device_id}/${x.core_type}` === p.name); if (row) openType(row) }
 const tooltip = { trigger: 'axis', renderMode: 'richText', confine: true }
@@ -119,11 +123,16 @@ onBeforeUnmount(() => clearInterval(timer))
           <details class="notice"><summary>统计口径与 {{ summary.warnings.length }} 条警告</summary><p>耗时是事件时长之和，不是墙钟时间。NPU trace-only 任务不计入 TOTAL；GPU 未映射计算与内存活动计入。整体算子视图与类型视图重叠，不能累加。</p><p v-for="(w, i) in summary.warnings" :key="i">{{ w.message }} <span v-if="w.count">数量 {{ w.count }}，{{ fmt(w.time_us) }} μs</span></p></details>
           <div class="tabs" role="tablist"><button v-for="[key, label] in tabs" :key="key" :class="{ active: tab === key }" @click="switchTab(key)" role="tab" :aria-selected="tab === key">{{ label }}</button></div>
           <section class="panel result-panel">
-            <template v-if="tab === 'overview' || tab === 'coverage'"><div class="toolbar"><input v-model="search" placeholder="搜索 OP Type" @keyup.enter="filter" aria-label="搜索类型"><select v-model="sort" @change="filter" aria-label="排序"><option value="npu_time">NPU 耗时降序</option><option value="coverage">可比时间覆盖率升序</option><option value="ratio">可比性能比降序</option><option value="name">类型名称</option></select><label class="check"><input type="checkbox" v-model="hotspot" @change="filter">NPU 占比 &gt; 1% 且可比时间覆盖率 &lt; 90%</label><button @click="filter">筛选</button></div><Chart v-if="tab === 'coverage'" :option="scatter" @select="clickedChart"/><p v-if="tab === 'coverage'" class="muted small">气泡大小表示不可比较耗时，不代表可节省时间。图表最多展示筛选后前 200 个类型。</p><div class="table-scroll"><table><thead><tr><th>OP Type / 融合分组</th><th>NPU / GPU 数量</th><th>NPU / GPU 总时间 μs</th><th>Comparable Ratio</th><th>Total Time Ratio</th><th>覆盖率 %<small>数量 / 时间</small></th><th>排查结论</th></tr></thead><tbody><tr v-for="r in rows" :key="r.device_id + r.op_type + r.core_type"><td><button class="type-link" @click="openType(r)" :disabled="r.row_kind !== 'npu_type'">{{ r.op_type }}</button><small>{{ r.device_id }} / {{ r.core_type }}</small><small v-if="r.fused_npu_type !== r.op_type || r.fused_gpu_type !== r.op_type">{{ r.fused_npu_type }} ↔ {{ r.fused_gpu_type }}</small></td><td>{{ fmt(r.npu_kernel_count, 0) }} / {{ fmt(r.gpu_kernel_count, 0) }}<small>GPU 内存活动 {{ fmt(r.gpu_memory_activity_count, 0) }}</small></td><td>{{ fmt(r.npu_total_time_us) }}<small>{{ fmt(r.gpu_total_time_us) }}</small></td><td><span :class="['ratio', ratioClass(r.comparable_ratio_gpu_npu)]">{{ fmt(r.comparable_ratio_gpu_npu, 3) }}</span></td><td><span :class="['ratio', ratioClass(r.total_time_ratio_gpu_npu)]">{{ fmt(r.total_time_ratio_gpu_npu, 3) }}</span></td><td><div v-for="k in ['direct', 'comparable', 'accounted']" :key="k" class="coverage-line"><span>{{ {direct:'Direct',comparable:'Comparable',accounted:'Accounted'}[k] }}</span>{{ fmt(r.coverage[k].count_pct, 1) }} / {{ fmt(r.coverage[k].time_pct, 1) }}</div></td><td class="conclusion">{{ r.conclusion || '—' }}</td></tr><tr v-if="!rows.length"><td colspan="7" class="empty-row">没有符合筛选条件的类型</td></tr></tbody></table></div><div class="pagination"><span>共 {{ total }} 行 · 第 {{ page + 1 }} 页</span><button :disabled="page === 0" @click="page--; action(loadResults)">上一页</button><button :disabled="(page + 1) * 30 >= total" @click="page++; action(loadResults)">下一页</button></div></template>
+            <template v-if="tab === 'overview' || tab === 'coverage'"><div class="toolbar"><input v-model="search" placeholder="搜索 OP Type" @keyup.enter="filter" aria-label="搜索类型"><select v-model="sort" @change="filter" aria-label="排序"><option value="npu_time">NPU 耗时降序</option><option value="coverage">可比时间覆盖率升序</option><option value="ratio">可比性能比降序</option><option value="name">类型名称</option></select><label class="check"><input type="checkbox" v-model="hotspot" @change="filter">NPU 占比 &gt; 1% 且可比时间覆盖率 &lt; 90%</label><button @click="filter">筛选</button></div><Chart v-if="tab === 'coverage'" :option="scatter" @select="clickedChart"/><p v-if="tab === 'coverage'" class="muted small">气泡大小表示不可比较耗时，不代表可节省时间。图表最多展示筛选后前 200 个类型。</p><div class="table-scroll"><table><thead><tr><th>OP Type / 融合分组</th><th>NPU / GPU 数量</th><th>NPU / GPU 总时间 μs</th><th>Comparable Ratio</th><th>Total Time Ratio</th><th>覆盖率 %<small>数量 / 时间</small></th><th>排查结论</th></tr></thead><tbody><tr v-for="r in rows" :key="r.device_id + r.op_type + r.core_type"><td><button class="type-link" @click="openType(r)" :disabled="r.row_kind !== 'npu_type'">{{ r.op_type }}</button><small>{{ r.device_id }} / {{ r.core_type }}</small><small v-if="r.fused_npu_type !== r.op_type || r.fused_gpu_type !== r.op_type">{{ r.fused_npu_type }} ↔ {{ r.fused_gpu_type }}</small></td><td>{{ fmt(r.npu_kernel_count, 0) }} / {{ fmt(r.gpu_kernel_count, 0) }}<small>GPU 内存活动 {{ fmt(r.gpu_memory_activity_count, 0) }}</small></td><td>{{ fmt(r.npu_total_time_us) }}<small>{{ fmt(r.gpu_total_time_us) }}</small></td><td><span :class="['ratio', ratioClass(r.comparable_ratio_gpu_npu)]">{{ fmt(r.comparable_ratio_gpu_npu, 3) }}</span></td><td><span :class="['ratio', ratioClass(r.total_time_ratio_gpu_npu)]">{{ fmt(r.total_time_ratio_gpu_npu, 3) }}</span></td><td><div v-for="k in ['direct', 'comparable', 'accounted']" :key="k" class="coverage-line"><span>{{ {direct:'Direct',comparable:'Comparable',accounted:'Accounted'}[k] }}</span>{{ fmt(r.coverage[k].count_pct, 1) }} / {{ fmt(r.coverage[k].time_pct, 1) }}</div></td><td class="conclusion">{{ r.conclusion || '—' }}<small v-if="r.cpu_alignment_status">{{ r.cpu_alignment_status }}</small><small v-if="r.kernel_comparison_status">{{ r.kernel_comparison_status }}</small><small>{{ r.whole_status }}</small><button v-if="r.whole_group_ids?.length" class="type-link" @click="openWhole(r)">{{ r.related_whole_ops }} →</button><a v-else-if="r.related_whole_ops" :href="download('coverage_diagnostics.md')">查看排查报告</a></td></tr><tr v-if="!rows.length"><td colspan="7" class="empty-row">没有符合筛选条件的类型</td></tr></tbody></table></div><div class="pagination"><span>共 {{ total }} 行 · 第 {{ page + 1 }} 页</span><button :disabled="page === 0" @click="page--; action(loadResults)">上一页</button><button :disabled="(page + 1) * 30 >= total" @click="page++; action(loadResults)">下一页</button></div></template>
             <template v-if="tab === 'distribution'"><h2>类型耗时 Top 12</h2><p class="muted">NPU 全类型时间与已分配 GPU 时间并列；覆盖率低时不是完整同类性能比较。点击图形查看类型证据。</p><Chart :option="bars" @select="clickedChart"/><div class="accounting"><div v-for="kind in ['kernel', 'memory']" :key="kind"><h3>GPU {{ kind === 'kernel' ? '计算 kernel' : '内存活动' }}</h3><p>已映射 {{ summary.gpu_accounting[kind].mapped_count }} 个 / {{ fmt(summary.gpu_accounting[kind].mapped_time_us) }} μs</p><p>未映射 {{ summary.gpu_accounting[kind].unmapped_count }} 个 / {{ fmt(summary.gpu_accounting[kind].unmapped_time_us) }} μs</p></div></div><h3>GPU 未映射事件</h3></template>
             <template v-if="tab === 'coverage'"><div class="panel-heading evidence-heading"><h2>{{ scope ? `${scope.op_type} · ${scope.device_id}/${scope.core_type}` : '所有低覆盖率类型' }} / 证据</h2><button v-if="scope" @click="scope = null; recordPage = 0; action(loadRecords)">清除类型选择</button></div><div class="toolbar"><select v-model="recordKind" aria-label="证据类型"><option value="reasons">原因汇总与排查建议</option><option value="mappings">逐 kernel 映射</option><option value="diagnoses">逐 kernel 诊断</option></select><span class="muted">Accounted 不等于 Comparable；原因是候选解释，不自动证明后端缺陷。</span></div></template>
-            <template v-if="tab === 'calls'"><h2>整体算子调用</h2><p class="notice">FlashAttention、CPU bundle 是重叠的替代比较视图，不能加入 TOTAL。Div/Sub 等专项证据仍在通用诊断报告中。</p></template>
-            <template v-if="tab !== 'overview'"><div class="record-list"><article v-for="(r, i) in records" :key="i" class="record"><template v-if="tab === 'coverage' && recordKind === 'reasons'"><div class="record-heading"><strong>{{ r.op_type }} · {{ r.reason }}</strong><span>{{ r.kernel_count }} 个 · {{ fmt(r.npu_time_us) }} μs</span></div><p>{{ r.hypothesis }}</p><p class="small muted">CPU {{ r.cpu_op || '未知' }} · API {{ r.npu_api || '未知' }} · NPU 样本 {{ r.sample_kernel_indices?.join(', ') }}</p><ol><li v-for="step in r.next_steps" :key="step">{{ step }}</li></ol></template><template v-else><button class="type-link" @click="showRecord(r)">{{ r['Fused OP'] || r['CPU Bundle'] || r['NPU Kernel Name'] || r['GPU Name'] || r.op_type || '事件' }} <span v-if="r['NPU Kernel Index'] !== undefined">#{{ r['NPU Kernel Index'] }}</span></button><p class="muted small">{{ r.source || r['Mapping Mode'] || r.reason || r['Status'] || '查看结构化证据' }}</p><button @click="showRecord(r)">查看详情 →</button></template></article><p v-if="!records.length" class="muted">没有对应记录。无诊断可能是类型未命中阈值，不代表已证明等价。</p></div><div class="pagination"><span>共 {{ recordTotal }} 条 · 第 {{ recordPage + 1 }} 页</span><button :disabled="recordPage === 0" @click="recordPage--; action(loadRecords)">上一页</button><button :disabled="(recordPage + 1) * 20 >= recordTotal" @click="recordPage++; action(loadRecords)">下一页</button></div></template>
+            <template v-if="tab === 'whole' || tab === 'calls'">
+              <h2>{{ tab === 'whole' ? '完整调用性能比较' : '完整调用明细' }}</h2>
+              <p class="notice">整体视图与类型表以及重叠父子调用不可相加，不提供跨行 TOTAL。GPU 时间包括该调用的计算及内存活动。Div/Sub 专项路径只在排查报告中。</p>
+              <div v-if="Object.keys(callFilter).length" class="toolbar"><span>当前关联：{{ callFilter.related_type || callFilter.group_id }}</span><button @click="callFilter = {}; recordPage = 0; action(loadRecords)">清除关联筛选</button></div>
+              <WholeCallTable :rows="records" :details="tab === 'calls'" @group="openCallGroup" @detail="showRecord"/>
+            </template>
+            <template v-if="tab !== 'overview'"><div v-if="tab !== 'whole' && tab !== 'calls'" class="record-list"><article v-for="(r, i) in records" :key="i" class="record"><template v-if="tab === 'coverage' && recordKind === 'reasons'"><div class="record-heading"><strong>{{ r.op_type }} · {{ r.reason }}</strong><span>{{ r.kernel_count }} 个 · {{ fmt(r.npu_time_us) }} μs</span></div><p>{{ r.hypothesis }}</p><p class="small muted">CPU {{ r.cpu_op || '未知' }} · API {{ r.npu_api || '未知' }} · NPU 样本 {{ r.sample_kernel_indices?.join(', ') }}</p><ol><li v-for="step in r.next_steps" :key="step">{{ step }}</li></ol></template><template v-else><button class="type-link" @click="showRecord(r)">{{ r['Fused OP'] || r['CPU Bundle'] || r['NPU Kernel Name'] || r['GPU Name'] || r.op_type || '事件' }} <span v-if="r['NPU Kernel Index'] !== undefined">#{{ r['NPU Kernel Index'] }}</span></button><p v-if="r.cpu_alignment_status">{{ r.cpu_alignment_status }} · {{ r.kernel_comparison_status }}</p><p class="muted small">{{ r.source || r['Mapping Mode'] || r.reason || r['Status'] || '查看结构化证据' }}</p><button @click="showRecord(r)">查看详情 →</button></template></article><p v-if="!records.length" class="muted">没有对应记录。无诊断可能是类型未命中阈值，不代表已证明等价。</p></div><div class="pagination"><span>共 {{ recordTotal }} 条 · 第 {{ recordPage + 1 }} 页</span><button :disabled="recordPage === 0" @click="recordPage--; action(loadRecords)">上一页</button><button :disabled="(recordPage + 1) * 20 >= recordTotal" @click="recordPage++; action(loadRecords)">下一页</button></div></template>
           </section>
         </template>
       </template>

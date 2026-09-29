@@ -296,7 +296,7 @@ class PrecisionAnalysisTest(unittest.TestCase):
             with zipfile.ZipFile(Path(tmp) / "npu_gpu_op_statistic.xlsx") as z:
                 root = ET.fromstring(z.read("xl/workbook.xml"))
                 self.assertEqual([s.attrib["name"] for s in root.findall(".//m:sheet", ns)],
-                                 ["总览", "覆盖率诊断", "耗时分布", "整体算子"])
+                                 ["类型对比", "整体对比", "覆盖率诊断", "调用明细", "耗时分布"])
 
     def test_path_evidence_survives_zero_diagnostic_threshold(self):
         gpu, npu, matches = precision_case()

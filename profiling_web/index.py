@@ -40,21 +40,30 @@ def build_index(reports, destination):
                 core_type TEXT, npu_index INTEGER, payload TEXT);
             CREATE INDEX records_kind_type ON records(kind,op_type,device_id,core_type);
             CREATE INDEX records_kernel ON records(kind,npu_index);
+            CREATE TABLE call_types (record_id INTEGER, op_type TEXT, device_id TEXT, core_type TEXT);
+            CREATE INDEX call_types_lookup ON call_types(op_type,device_id,core_type,record_id);
         """)
         for row in csv_rows(reports / "npu_gpu_op_statistic.csv"):
             record = _statistic_record(row)
             record.update({"fused_npu_type": row.get("FUSED_OP_NPU_TYPE", ""), "fused_gpu_type": row.get("FUSED_OP_GPU_TYPE", ""),
-                           "conclusion": row.get("排查结论", ""), "advice": row.get("排查建议", "")})
+                           "conclusion": row.get("排查结论", ""), "advice": row.get("排查建议", ""),
+                           "whole_status": row.get("Whole Comparison Status", ""),
+                           "related_whole_ops": row.get("Related Whole OPs", ""),
+                           "whole_group_ids": json.loads(row.get("Whole Group IDs") or "[]"),
+                           "cpu_alignment_status": row.get("CPU Alignment Status", ""),
+                           "kernel_comparison_status": row.get("Kernel Comparison Status", "")})
             db.execute("INSERT INTO stats VALUES(NULL,?,?,?,?,?,?,?,?,?)", (
                 record["op_type"], record["device_id"], record["core_type"], record["row_kind"],
                 record["npu_total_time_us"], record["npu_ratio_pct"], record["coverage"]["comparable"]["time_pct"],
                 record["comparable_ratio_gpu_npu"], json.dumps(record, ensure_ascii=False)))
 
         def insert(kind, row, op_type="", device="", core="", npu=None):
-            db.execute("INSERT INTO records VALUES(NULL,?,?,?,?,?,?)", (kind, op_type, device, core, npu, json.dumps(row, ensure_ascii=False)))
+            return db.execute("INSERT INTO records VALUES(NULL,?,?,?,?,?,?)", (kind, op_type, device, core, npu, json.dumps(row, ensure_ascii=False))).lastrowid
 
+        types_by_kernel = {}
         for row in csv_rows(reports / "npu_kernel_gpu_mapping.csv"):
             insert("mappings", row, row["OP Type"], row["Device_id"], row["Core Type"], int(row["NPU Kernel Index"]))
+            types_by_kernel[int(row["NPU Kernel Index"])] = (row["OP Type"], row["Device_id"], row["Core Type"])
         diag = read_json(reports / "coverage_diagnostics.json")
         for row in diag["kernels"]:
             insert("diagnoses", row, row.get("op_type", ""), row.get("device_id", ""), row.get("core_type", ""), row["npu_kernel_index"])
@@ -65,6 +74,18 @@ def build_index(reports, destination):
         for source in ("cpu_bundle_mapping.csv", "fused_op_mapping.csv"):
             for row in csv_rows(reports / source):
                 insert("calls", {"source": source, **row}, row.get("Fused OP", row.get("CPU Bundle", "")))
+        group_types = {}
+        for filename, kind in (("whole_call_mapping.csv", "call_details"), ("whole_call_statistic.csv", "whole_calls")):
+            if not (reports / filename).exists():
+                continue
+            for row in csv_rows(reports / filename):
+                record_id = insert(kind, row, row["Whole OP"], row.get("Device_id", ""))
+                if kind == "call_details":
+                    keys = {types_by_kernel[i] for i in json.loads(row["NPU Kernel Indices"]) if i in types_by_kernel}
+                    group_types.setdefault(row["Group ID"], set()).update(keys)
+                else:
+                    keys = group_types.get(row["Group ID"], set())
+                db.executemany("INSERT INTO call_types VALUES(?,?,?,?)", [(record_id, *key) for key in keys])
         for row in csv_rows(reports / "gpu_unmapped_activity.csv"):
             insert("gpu_unmapped", row)
         db.commit()
@@ -72,10 +93,10 @@ def build_index(reports, destination):
 
 def query_index(path, *, kind="operators", op_type=None, device_id=None, core_type=None,
                 npu_index=None, search="", coverage_max=None, npu_ratio_min=None,
-                sort="npu_time", offset=0, limit=30):
+                sort="npu_time", offset=0, limit=30, group_id=None, call_id=None, related_type=None):
     if not 1 <= limit <= 200 or offset < 0:
         raise ValueError("Invalid pagination")
-    if kind not in {"operators", "mappings", "diagnoses", "reasons", "calls", "gpu_unmapped"}:
+    if kind not in {"operators", "mappings", "diagnoses", "reasons", "calls", "gpu_unmapped", "whole_calls", "call_details"}:
         raise ValueError("Unknown record kind")
     conditions, params = [], []
     table = "stats" if kind == "operators" else "records"
@@ -84,10 +105,25 @@ def query_index(path, *, kind="operators", op_type=None, device_id=None, core_ty
         params.append(kind)
     else:
         conditions.append("row_kind!='total'")
-    for column, value in (("op_type", op_type), ("device_id", device_id), ("core_type", core_type)):
+    for column, value in (("op_type", op_type), ("device_id", None if related_type else device_id), ("core_type", None if related_type else core_type)):
         if value is not None:
             conditions.append(column + "=?")
             params.append(value)
+    if group_id is not None or call_id is not None or related_type is not None:
+        if kind not in {"whole_calls", "call_details"}:
+            raise ValueError("Call filters require whole_calls or call_details")
+        for field, value in (("Group ID", group_id), ("Call ID", call_id)):
+            if value is not None:
+                conditions.append("json_extract(payload, ?) = ?")
+                params.extend(['$."' + field + '"', value])
+        if related_type is not None:
+            clauses = ["record_id=records.id", "call_types.op_type=?"]
+            params.append(related_type)
+            for field, value in (("device_id", device_id), ("core_type", core_type)):
+                if value is not None:
+                    clauses.append("call_types." + field + "=?")
+                    params.append(value)
+            conditions.append("EXISTS (SELECT 1 FROM call_types WHERE " + " AND ".join(clauses) + ")")
     if npu_index is not None:
         if table != "records":
             raise ValueError("Kernel filter only applies to records")
@@ -109,6 +145,8 @@ def query_index(path, *, kind="operators", op_type=None, device_id=None, core_ty
     where = " WHERE " + " AND ".join(conditions)
     # URI is built from a server-owned path, never a request path.
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
+        if related_type and not db.execute("SELECT 1 FROM sqlite_master WHERE name='call_types'").fetchone():
+            return {"total": 0, "offset": offset, "limit": limit, "has_more": False, "items": []}
         count = db.execute("SELECT count(*) FROM " + table + where, params).fetchone()[0]
         rows = db.execute("SELECT payload FROM " + table + where + " ORDER BY " + order + ",id ASC LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
     return {"total": count, "offset": offset, "limit": limit, "has_more": offset + limit < count,

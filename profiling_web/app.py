@@ -261,12 +261,14 @@ def create_app(settings=None):
                 npu_index: int | None = Query(None, ge=0), search: str = Query("", max_length=200),
                 coverage_max: float | None = Query(None, ge=0, le=100, allow_inf_nan=False),
                 npu_ratio_min: float | None = Query(None, ge=0, le=100, allow_inf_nan=False),
+                group_id: str | None = Query(None, max_length=120), call_id: str | None = Query(None, max_length=120),
+                related_type: str | None = Query(None, max_length=200),
                 sort: str = "npu_time", offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=200)):
         _, root = result_paths(job_id)
         try:
             return query_index(root / "index.sqlite", kind=kind, op_type=op_type, device_id=device_id, core_type=core_type,
                                npu_index=npu_index, search=search, coverage_max=coverage_max, npu_ratio_min=npu_ratio_min,
-                               sort=sort, offset=offset, limit=limit)
+                               sort=sort, offset=offset, limit=limit, group_id=group_id, call_id=call_id, related_type=related_type)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

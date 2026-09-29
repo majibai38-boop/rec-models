@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 
 from .device_compare import scoped_indices
+from .call_metadata import compare_metadata
 from .parser import normalize_input_dtypes, normalize_input_shapes
 
 
@@ -22,7 +23,7 @@ from .parser import normalize_input_dtypes, normalize_input_shapes
 # comparison structure and work for previously unseen kernel/operator names.
 ADVICE = {
     "whole_call_available": (
-        "comparison_granularity", "已有整体比较，缺少独立 kernel 分摊",
+        "comparison_granularity", "已纳入整体比较，无法独立归因",
         "对应工作已纳入整体调用视图，逐类型低覆盖率不等于漏掉整次调用。",
         ["查看引用的整体调用记录，比较包含辅助 kernel 的完整 device 时间。",
          "如要分析后端额外开销，核对整条路径的源码与最小复现；不要把同一 GPU kernel 时间再次分摊给辅助类型。"],
@@ -56,6 +57,12 @@ ADVICE = {
         "差异可能来自输入/overload 不同，也可能来自后端元数据表达方式；需要先区分。",
         ["逐字段检查报告中的 shape/dtype/module/name 差异，区分 Tensor、标量、零维 Tensor、可选参数和列表编码。",
          "核对两端实际输入、autocast 和调用源码；仅修正规范化等价项，不应把真实 dtype/shape 冲突强制配对。"],
+    ),
+    "cpu_metadata_missing": (
+        "insufficient_evidence", "CPU 已对齐，但元数据不完整",
+        "TensorList 未展开或输入字段缺失，不等于已观察到真实 shape/dtype 冲突。",
+        ["补充列表元素 shape/dtype，结合完整调用、kernel 输出和模块边界核实语义。",
+         "保留现有 CPU 匹配，不将缺失字段作为通配符，也不自动提升独立 kernel 覆盖率。"],
     ),
     "cpu_match_untrusted": (
         "insufficient_evidence", "CPU 匹配置信度不足",
@@ -246,6 +253,8 @@ def _reason(e):
         return "cpu_alignment_gap" if e["same_module_metadata_candidate_count"] else "cpu_match_missing"
     if e["cpu_metadata_differences"]:
         return "cpu_metadata_conflict"
+    if set(e["cpu_missing_metadata"]) & {"input_shapes", "input_dtypes"}:
+        return "cpu_metadata_missing"
     if e["cpu_match_confidence"] not in {"high", "medium"}:
         return "cpu_match_untrusted"
     if not e["gpu_scope_kernel_indices"]:
@@ -344,15 +353,7 @@ def build_coverage_diagnostics(gpu, npu, matches, mapping_rows, *, threshold=90.
         ms = by_npu[index]
         match = ms[0] if len(ms) == 1 else None
         gp = gpu_cpu_info(match.gpu_op_index) if match else None
-        differences, missing = [], []
-        if gp:
-            for field in ("input_shapes", "input_dtypes", "module"):
-                if not cpu[field] or not gp[field]:
-                    missing.append(field)
-                elif cpu[field] != gp[field]:
-                    differences.append(field)
-            if cpu["name"] != op_map.get(gp["name"], gp["name"]):
-                differences.append("name")
+        differences, missing = compare_metadata(npu.ops[index], gpu.ops[match.gpu_op_index], op_map) if gp else ([], [])
         ancestor = next((i for i in list(_parents(npu, index))[1:]
                          if len(by_npu[i]) == 1 and by_npu[i][0].confidence in {"high", "medium"}), None)
         scoped = nk_scope[index]
@@ -405,12 +406,18 @@ def build_coverage_diagnostics(gpu, npu, matches, mapping_rows, *, threshold=90.
             evidence["gpu_scope_memory_names"] = [gpu.memory_activities[i].event.name for i in gm]
             reason = _reason(evidence)
             category, title, hypothesis, steps = ADVICE[reason]
+            cpu_status = ("未建立匹配" if not evidence.get("cpu_match_count") else
+                          "CPU 匹配不唯一" if evidence["cpu_match_count"] > 1 else
+                          "元数据真实冲突" if evidence["cpu_metadata_differences"] else
+                          "已对齐，但元数据不完整" if evidence["cpu_missing_metadata"] else "已对齐")
             result = {
                 "npu_kernel_index": k, "device_id": item["device_id"], "op_type": item["op_type"],
                 "core_type": item["core_type"], "npu_kernel_name": kernel.detail.name if kernel.detail else kernel.event.name,
                 "npu_duration_us": float(row["NPU Duration(us)"]),
                 "reason_id": reason, "category": category, "reason": title,
                 "hypothesis": hypothesis, "next_steps": list(steps), "cause_status": "requires_verification",
+                "cpu_alignment_status": cpu_status,
+                "kernel_comparison_status": "已纳入整体比较，无法独立归因" if evidence["whole_call_references"] else "尚未独立比较",
                 "evidence": evidence,
             }
             kernel_reports.append(result)
@@ -501,6 +508,12 @@ def write_coverage_diagnostics(output, report):
                           f"候选解释：{d['hypothesis']}", "",
                           "证据样本（NPU Kernel Index）：" + ", ".join(map(str, d['sample_kernel_indices'])) + "。"])
             sample = by_kernel[d["sample_kernel_indices"][0]]["evidence"]
+            sample_row = by_kernel[d["sample_kernel_indices"][0]]
+            lines.append(f"CPU 对齐状态：{sample_row['cpu_alignment_status']}；kernel 比较状态：{sample_row['kernel_comparison_status']}。")
+            if sample_row.get("logical_call_references"):
+                lines.append("完整调用视图：whole_call_mapping.csv / " + ", ".join(r["call_id"] for r in sample_row["logical_call_references"]) + "。")
+            if sample.get("cpu_missing_metadata"):
+                lines.append("缺失或未展开字段：" + ", ".join(sample["cpu_missing_metadata"]) + "（不是已确认的值冲突）。")
             lines.append(f"样本关联：{_md(sample['npu_link_method'])}；原映射状态：{_md(sample['mapping_mode'])}。")
             metadata = sample["kernel_metadata"]
             if metadata:

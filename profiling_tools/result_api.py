@@ -76,6 +76,9 @@ def _statistic_record(row):
                                   ("comparable", "Comparable Coverage(%)", "Comparable Time Coverage(%)"),
                                   ("accounted", "Accounted Coverage(%)", "Accounted Time Coverage(%)"))
     }
+    if result["row_kind"] == "npu_type" and number("Comparable NPU Kernel Count") == 0:
+        result["comparable_ratio_gpu_npu"] = None
+        result["total_time_ratio_gpu_npu"] = None
     return result
 
 
@@ -192,6 +195,47 @@ unverified for provenance. Neither missing records nor NaNs count as healthy 0.
         check("diagnostic_unique_kernels", len(dk) == len({r["npu_kernel_index"] for r in dk}))
         check("diagnostic_count_conservation", sum(sum(d["kernel_count"] for d in t["diagnoses"]) for t in diagnostic["types"]) == len(dk))
         check("diagnostic_time_conservation", close(sum(r["npu_duration_us"] for r in dk), diagnostic["summary"]["uncomparable_time_us"]))
+        if (root / "whole_call_mapping.csv").exists():
+            whole_rows = read_csv(root / "whole_call_mapping.csv")
+            whole_stats = read_csv(root / "whole_call_statistic.csv")
+            call_by_id = {r["Call ID"]: r for r in whole_rows}
+            check("whole.unique_calls", len(call_by_id) == len(whole_rows))
+            for row in whole_rows:
+                call_id = row["Call ID"]
+                amounts = {}
+                for kind, field, source in (("npu", "NPU Kernel Indices", npu_inventory),
+                                             ("kernel", "GPU Kernel Indices", inventory["kernel"]),
+                                             ("memory", "GPU Memory Activity Indices", inventory["memory"])):
+                    indices = _ids(row, field)
+                    check(f"whole.{call_id}.{kind}.indices", len(indices) == len(set(indices)) and set(indices) <= set(source))
+                    amounts[kind] = sum(source[i] for i in set(indices) if i in source)
+                check(f"whole.{call_id}.npu_time", close(row["NPU Total Time(us)"], amounts["npu"]))
+                check(f"whole.{call_id}.gpu_time", close(row["GPU Total Time(us)"], amounts["kernel"] + amounts["memory"]))
+                comparable = _true(row["Comparable"])
+                check(f"whole.{call_id}.ratio", close(row["Comparable Ratio(GPU/NPU)"],
+                    (amounts["kernel"] + amounts["memory"]) / amounts["npu"]) if comparable and amounts["npu"] else row["Comparable Ratio(GPU/NPU)"] == "")
+            check("whole.unique_groups", len(whole_stats) == len({r["Group ID"] for r in whole_stats}))
+            check("whole.group_partition", {r["Group ID"] for r in whole_stats} == {r["Group ID"] for r in whole_rows})
+            for row in whole_stats:
+                group_id = row["Group ID"]
+                all_ids = json.loads(row["Call IDs"])
+                expected_ids = {r["Call ID"] for r in whole_rows if r["Group ID"] == group_id}
+                check(f"whole.{group_id}.calls", set(all_ids) == expected_ids and len(all_ids) == len(expected_ids))
+                selected = json.loads(row["Comparable Call IDs"])
+                check(f"whole.{group_id}.comparable_subset", set(selected) <= expected_ids and len(selected) == len(set(selected)))
+                members = [call_by_id[i] for i in selected]
+                check(f"whole.{group_id}.comparable_count", len(members) == int(row["Comparable Call Count"]) and all(_true(r["Comparable"]) for r in members))
+                for field in ("NPU Kernel Indices", "GPU Kernel Indices", "GPU Memory Activity Indices"):
+                    indices = [i for r in members for i in _ids(r, field)]
+                    check(f"whole.{group_id}.{field}.unique", len(indices) == len(set(indices)))
+                nt = sum(_number(r["NPU Total Time(us)"]) for r in members)
+                gt = sum(_number(r["GPU Total Time(us)"]) for r in members)
+                check(f"whole.{group_id}.npu_time", close(row["Comparable NPU Time(us)"], nt))
+                check(f"whole.{group_id}.gpu_time", close(row["Comparable GPU Time(us)"], gt))
+                check(f"whole.{group_id}.ratio", close(row["Comparable Ratio(GPU/NPU)"], gt / nt) if nt else row["Comparable Ratio(GPU/NPU)"] == "")
+                if row["Total Time Ratio(GPU/NPU)"] != "":
+                    check(f"whole.{group_id}.population_ratio", _number(row["NPU Population Time(us)"]) > 0 and
+                          close(row["Total Time Ratio(GPU/NPU)"], _number(row["GPU Population Time(us)"]) / _number(row["NPU Population Time(us)"])))
         if (root / "run_manifest.json").is_file():
             manifest = read_json(root / "run_manifest.json")
             check("run_identity", manifest["run_id"] == summary.get("run_id"))
@@ -283,9 +327,13 @@ def query_results(output_dir, *, op_type=None, npu_kernel_index=None, gpu_kernel
     calls = []
     for source, items in (("precision_paths", diagnostic.get("specialized_evidence", {}).get("precision_paths", [])),
                           ("cpu_bundle_mapping.csv", read_csv(root / "cpu_bundle_mapping.csv")),
-                          ("fused_op_mapping.csv", read_csv(root / "fused_op_mapping.csv"))):
+                          ("fused_op_mapping.csv", read_csv(root / "fused_op_mapping.csv")),
+                          ("whole_call_mapping.csv", read_csv(root / "whole_call_mapping.csv") if (root / "whole_call_mapping.csv").exists() else [])):
         for row in items:
-            if nk.intersection(_ids(row, "NPU Kernel Indices")):
+            if (nk.intersection(_ids(row, "NPU Kernel Indices")) or
+                (not any(v is not None for v in (op_type, npu_kernel_index, device_id, core_type)) and (
+                    (gpu_kernel_index is not None and gpu_kernel_index in _ids(row, "GPU Kernel Indices")) or
+                    (memory_activity_index is not None and memory_activity_index in _ids(row, "GPU Memory Activity Indices"))))):
                 calls.append({"source": source, "record": row})
     # Unmapped GPU events are independently queryable, including ownerless work.
     gpu_rows = []

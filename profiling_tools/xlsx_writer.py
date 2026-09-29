@@ -23,6 +23,8 @@ class TableSheet:
     rows: Sequence[Mapping[str, Any]] | None = None
     wrap_columns: Sequence[str] = ()
     freeze_columns: int = 0
+    hidden_columns: Sequence[str] = ()
+    links: Mapping[tuple[int, str], str] | None = None
 
 
 def _column_name(index: int) -> str:
@@ -91,6 +93,8 @@ def _worksheet_xml(
     merge_columns: Sequence[str],
     wrap_columns: Sequence[str] = (),
     freeze_columns: int = 0,
+    hidden_columns: Sequence[str] = (),
+    links: Mapping[tuple[int, str], str] | None = None,
 ) -> str:
     merge_column_indices = {
         fieldnames.index(fieldname)
@@ -124,7 +128,8 @@ def _worksheet_xml(
     last_row = max(len(rows) + 1, 1)
     column_xml = "".join(
         f'<col min="{index + 1}" max="{index + 1}" '
-        f'width="{_column_width(fieldname, rows):.2f}" customWidth="1"/>'
+        f'width="{_column_width(fieldname, rows):.2f}" customWidth="1"'
+        + (' hidden="1" outlineLevel="1"' if fieldname in hidden_columns else '') + '/>'
         for index, fieldname in enumerate(fieldnames)
     )
     header_cells = "".join(
@@ -189,6 +194,12 @@ def _worksheet_xml(
         if merged_ranges
         else ""
     )
+    hyperlink_xml = "".join(
+        f'<hyperlink ref="{_column_name(fieldnames.index(field))}{index + 2}" location={quoteattr(location)}/>'
+        for (index, field), location in (links or {}).items() if field in fieldnames and 0 <= index < len(rows)
+    )
+    if hyperlink_xml:
+        hyperlink_xml = '<hyperlinks>' + hyperlink_xml + '</hyperlinks>'
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -206,6 +217,7 @@ def _worksheet_xml(
         # OOXML requires autoFilter before mergeCells.  Browsers are often
         # tolerant of the reverse order, but desktop Excel rejects or repairs it.
         f'{merge_xml}'
+        f'{hyperlink_xml}'
         '</worksheet>'
     )
 
@@ -356,6 +368,8 @@ def write_grouped_workbook_xlsx(
                     sheet.merge_columns,
                     sheet.wrap_columns,
                     sheet.freeze_columns,
+                    sheet.hidden_columns,
+                    sheet.links,
                 ),
             )
         archive.writestr("xl/styles.xml", styles_xml)

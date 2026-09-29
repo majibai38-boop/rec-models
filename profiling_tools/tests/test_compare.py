@@ -1173,14 +1173,14 @@ class CompareProfilesTest(unittest.TestCase):
                 workbook_xml = ElementTree.fromstring(workbook.read("xl/workbook.xml"))
                 worksheets = [
                     ElementTree.fromstring(workbook.read(f"xl/worksheets/sheet{index}.xml"))
-                    for index in range(1, 4)
+                    for index in (1, 3, 5)
                 ]
             namespace = {
                 "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
             }
             self.assertEqual(
                 [sheet.attrib["name"] for sheet in workbook_xml.findall(".//main:sheet", namespace)],
-                ["总览", "覆盖率诊断", "耗时分布", "整体算子"],
+                ["类型对比", "整体对比", "覆盖率诊断", "调用明细", "耗时分布"],
             )
             for worksheet in worksheets:
                 merged_ranges = {
@@ -1197,7 +1197,7 @@ class CompareProfilesTest(unittest.TestCase):
                     cell.findtext("main:is/main:t", namespaces=namespace)
                     for cell in worksheet.findall(".//main:sheetData/main:row[@r='1']/main:c", namespace)
                 ]
-            self.assertEqual(len(headers(worksheets[0])), 16)
+            self.assertEqual(len(headers(worksheets[0])), 18)
             self.assertIn("排查结论", headers(worksheets[0]))
             self.assertIn("排查建议", headers(worksheets[1]))
             self.assertIn("GPU Activity Kind", headers(worksheets[0]))

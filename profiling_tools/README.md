@@ -2,6 +2,8 @@
 
 浏览器上传、任务队列、可视化和报告下载，见 [单机 Web 工作台部署指南](../profiling_web/README.md)。原 CLI 和 Skill 接口保持不变。
 
+Excel/Web 的五页签布局、整体比较口径和下钻方式见 [整体调用视图说明](docs/whole-call-views.md)。整体视图不改变类型表分配或 TOTAL，不可跨视图相加。
+
 该工具从 GPU 与 NPU 的 PyTorch Profiler trace 中提取 `aten::` 调用，先规范化 shape、dtype 和 Module，再使用语义锚点与局部执行顺序进行对齐，并把每个 aten 实例直接下发的 device kernel 作为一个 **kernel bundle** 进行比较。NPU 的 `kernel_details.csv` 用于为匹配到的 GPU bundle 补充 NPU `Type`、`Core Type`、shape 和 dtype。
 
 工具不会假设 GPU 与 NPU 的物理 kernel 数量相同：数量相等时会输出顺序映射；数量不等但 bundle 中存在与 aten 同类型的唯一主 kernel 时，会输出 `semantic_primary` 映射并保留完整 bundle；其余情况保留 bundle 级映射，避免伪造逐 kernel 的一一关系。
@@ -147,7 +149,8 @@ python -m profiling_tools --help
 | `gpu_kernel_mapping.csv` | GPU kernel 到 NPU Type/shape 的映射；明确标记 `one_to_one`、`ordered_equal_count`、`semantic_primary` 或 `bundle`，并保留 NPU bundle 的完整类型和名称 |
 | `npu_kernel_gpu_mapping.csv` | NPU-first 明细：每个 NPU kernel 经由所属 CPU op 和 CPU op 匹配结果映射到 GPU kernel/bundle；记录 GPU kernel 的实际子 op、来源以及三种覆盖状态 |
 | `npu_gpu_op_statistic.csv` | NPU-first 汇总：在 `OP Type` 左侧增加 `FUSED_OP_NPU_TYPE` / `FUSED_OP_GPU_TYPE`；分别按 kernel 数量和 NPU 时间统计 Direct、Comparable、Accounted 覆盖率。同一融合组连续排列；CSV 中组名逐行重复。普通非融合算子两列均回填原 `OP Type` |
-| `npu_gpu_op_statistic.xlsx` | 四个页签：`总览`、`覆盖率诊断`、`耗时分布`、`整体算子`。表格展示通用排查结论，Div/Sub 具体路径移至通用排查报告 |
+| `npu_gpu_op_statistic.xlsx` | 五个页签：`类型对比`、`整体对比`、`覆盖率诊断`、`调用明细`、`耗时分布`。表格展示通用排查结论，Div/Sub 具体路径保留在通用排查报告 |
+| `whole_call_statistic.csv` / `whole_call_mapping.csv` | 整体调用分组汇总 / 逐调用证据，包含可比状态、两端完整设备活动、分组和调用编号；独立视图，不与类型表相加 |
 | `gpu_memory_activity.csv` | GPU memcpy/memset 设备事件清单：独立编号、方向、字节数、设备时间、correlation 和 CPU owner；不计入计算 kernel 数量 |
 | `cpu_bundle_mapping.csv` | Stack、标量准备＋IndexPut 的逐调用整体比较；包含两侧 kernel ID、GPU memory activity ID 和验证依据，可独立审计 |
 | `cpu_bundle_statistic.csv` | 上述 CPU 整体调用汇总；这是独立比较视图，不可与逐类型、FA 或 region 表直接相加 |
@@ -165,14 +168,15 @@ python -m profiling_tools --help
 
 ### 统计工作簿页签
 
-打开 `npu_gpu_op_statistic.xlsx` 后，先看 `总览`：按 NPU 时间占比识别热点，再结合 Comparable/Accounted 时间覆盖率判断性能比是否有代表性。**普通 NPU 类型行**的两列比值分别是 `Comparable Ratio(GPU/NPU) = GPU Total Time / Comparable NPU Time` 和 `Total Time Ratio(GPU/NPU) = GPU Total Time / NPU Total Time`。这里的 `GPU Total Time` 只累计分配到该类型的 GPU kernel 与已映射内存活动；覆盖率不足时，第二列并不代表该类型的完整 GPU/NPU 总耗时比。比值大于 1 表示分子所用的 GPU 时间大于相应 NPU 时间。两列在 XLSX 中按原始数值着色：`>= 2.0` 深绿、`1.0 <= x < 2.0` 浅绿、`< 1.0` 黄色；空值不着色。
+打开 `npu_gpu_op_statistic.xlsx` 后，先从 `类型对比` 按 NPU 时间占比识别热点，再进入 `整体对比` 查看完整调用，结合 Comparable/Accounted 时间覆盖率判断性能比是否有代表性。**普通 NPU 类型行**的两列比值分别是 `Comparable Ratio(GPU/NPU) = GPU Total Time / Comparable NPU Time` 和 `Total Time Ratio(GPU/NPU) = GPU Total Time / NPU Total Time`。这里的 `GPU Total Time` 只累计分配到该类型的 GPU kernel 与已映射内存活动；覆盖率不足时，第二列并不代表该类型的完整 GPU/NPU 总耗时比。没有可比 kernel 的类型行在展示中留空比值，原 CSV 数值保持兼容。比值大于 1 表示分子所用的 GPU 时间大于相应 NPU 时间。两列在 XLSX 中按原始数值着色：`>= 2.0` 深绿、`1.0 <= x < 2.0` 浅绿、`< 1.0` 黄色；空值不着色。
 
-- `总览`：融合类型、原始 `OP Type`、两端 kernel 数量、NPU 总耗时与占比、两种时间覆盖率、可比 NPU 耗时、GPU 总耗时及上述两种比值。新增通用 `排查结论`，按原因列出缺口数量。
+- `整体对比`：按逻辑调用和两端实现组合分组，展示可比调用的完整设备时间及比值。仅在完成两端同名调用全量盘点且组合一致时展示 Total Time Ratio；否则留空并注明原因。可点击分组进入调用明细。
+- `类型对比`：融合类型、原始 `OP Type`、两端 kernel 数量、NPU 总耗时与占比、两种时间覆盖率、可比 NPU 耗时、GPU 总耗时及上述两种比值。新增整体比较状态与跳转入口，保留通用 `排查结论`。
 - `覆盖率诊断`：Direct、Comparable、Accounted 的 kernel 数量/时间覆盖率、未映射数量、`Mapping Mode Counts`，以及通用 `排查结论` / `排查建议`。未触发阈值与全部纳入比较明确区分；结论不包含 Div/Sub 专项路径。
 - `耗时分布`：两边 kernel 数量、匹配的 CPU 调用数、NPU/GPU 单 kernel 的 Min/Avg/Max、可比范围的 GPU-NPU 时间差。
-- `整体算子`：Stack 的 `Pack + ConcatD`，以及标量准备＋IndexPut 的 `Fill + BroadcastTo + IndexPutV2` 整体比较。GPU 时间在此页包含该调用的计算 kernel 和已关联设备拷贝，不能与前三页的同一工作重复相加。
+- `调用明细`：逐调用展示 CPU 对齐状态、kernel 比较状态、两端 kernel/内存活动和证据。元数据不足的候选保留观察耗时，但不输出性能比。包含 FlashAttentionFunc、已有 CPU bundle 和满足证据要求的通用调用；Div/Sub 精度路径只通过排查报告提供。
 
-前三个页签和 `npu_gpu_op_statistic.csv` 最后增加以下行（CSV 用 `Row Kind` 区分）：
+`类型对比`、`覆盖率诊断`、`耗时分布` 和 `npu_gpu_op_statistic.csv` 最后增加以下行（CSV 用 `Row Kind` 区分）：
 
 - `GPU_UNMAPPED_KERNELS` / `gpu_unmapped_kernel`：**没有分配到任何 NPU 类型**的 GPU kernel 合计，始终输出，包括全量映射时的真实 0。即使某个 kernel 已在整体算子中比较，仍属于逐类型表的余项，结论会单独说明已有整体比较的数量。
 - `GPU_UNMAPPED_MEMORY` / `gpu_unmapped_memory`：未分配的 GPU memcpy/memset，存在时单独输出，不计入 kernel 数量。
