@@ -78,15 +78,21 @@ def canonical_op_name(name: str) -> str:
     return value
 
 
+CUSTOM_COMPARABLE_OPS = frozenset({
+    "ropefunc", "customop::triton_target_attention_nobitwise_varlen",
+    "customop::triton_layernorm_forward",
+})
+
+
 _EXTRA_OPERATOR_NAMES_BY_SIDE = {
     # FlashAttentionFunc is a record_function/custom autograd op in CUDA
     # traces, not an aten:: event.  Keep it as an operator so its directly
     # launched fwd_kernel bundle can participate in explicit cross-backend
     # mappings without broadening the default operator prefix.
     "gpu": {"flashattentionfunc", "nestedconcatfunc",
-            "position_concat_fwd_kernel", "create_position_offset_fwd_kernel"},
+            "position_concat_fwd_kernel", "create_position_offset_fwd_kernel"} | CUSTOM_COMPARABLE_OPS,
     "npu": {"nestedconcatfunc", "position_concat_fwd_kernel",
-            "create_position_offset_fwd_kernel"},
+            "create_position_offset_fwd_kernel"} | CUSTOM_COMPARABLE_OPS,
 }
 
 

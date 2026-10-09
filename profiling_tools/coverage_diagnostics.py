@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 
 from .device_compare import scoped_indices
-from .call_metadata import compare_metadata
+from .call_metadata import compare_match_metadata
 from .parser import normalize_input_dtypes, normalize_input_shapes
 
 
@@ -357,7 +357,7 @@ def build_coverage_diagnostics(gpu, npu, matches, mapping_rows, *, threshold=90.
         ms = by_npu[index]
         match = ms[0] if len(ms) == 1 else None
         gp = gpu_cpu_info(match.gpu_op_index) if match else None
-        differences, missing = compare_metadata(npu.ops[index], gpu.ops[match.gpu_op_index], op_map) if gp else ([], [])
+        differences, missing = compare_match_metadata(npu.ops[index], gpu.ops[match.gpu_op_index], match, op_map) if gp else ([], [])
         ancestor = next((i for i in list(_parents(npu, index))[1:]
                          if len(by_npu[i]) == 1 and by_npu[i][0].confidence in {"high", "medium"}), None)
         scoped = nk_scope[index]

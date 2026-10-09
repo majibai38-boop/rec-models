@@ -4,6 +4,7 @@ from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+import heapq
 
 from profiling_tools.result_api import _statistic_record, read_json, summarize_results
 
@@ -25,7 +26,7 @@ def public_summary(reports):
 
 def downloadable(name):
     return (Path(name).name == name and "/" not in name and "\\" not in name
-            and name not in {"summary.json", "run_manifest.json", "input_inspection.json"}
+            and name not in {"summary.json", "run_manifest.json", "input_inspection.json", "manual_catalog.json"}
             and Path(name).suffix in {".csv", ".xlsx", ".json", ".md"})
 
 
@@ -42,6 +43,9 @@ def build_index(reports, destination):
             CREATE INDEX records_kernel ON records(kind,npu_index);
             CREATE TABLE call_types (record_id INTEGER, op_type TEXT, device_id TEXT, core_type TEXT);
             CREATE INDEX call_types_lookup ON call_types(op_type,device_id,core_type,record_id);
+            CREATE TABLE manual_groups(kind TEXT, id TEXT, op_type TEXT, device_id TEXT, core_type TEXT,
+                duration REAL, search TEXT, payload TEXT, PRIMARY KEY(kind,id));
+            CREATE INDEX manual_type ON manual_groups(kind,op_type,device_id,core_type);
         """)
         for row in csv_rows(reports / "npu_gpu_op_statistic.csv"):
             record = _statistic_record(row)
@@ -52,6 +56,7 @@ def build_index(reports, destination):
                            "whole_group_ids": json.loads(row.get("Whole Group IDs") or "[]"),
                            "cpu_alignment_status": row.get("CPU Alignment Status", ""),
                            "kernel_comparison_status": row.get("Kernel Comparison Status", "")})
+            record['manual_count'] = int(row.get('Manual Mapping Count') or 0)
             db.execute("INSERT INTO stats VALUES(NULL,?,?,?,?,?,?,?,?,?)", (
                 record["op_type"], record["device_id"], record["core_type"], record["row_kind"],
                 record["npu_total_time_us"], record["npu_ratio_pct"], record["coverage"]["comparable"]["time_pct"],
@@ -88,7 +93,50 @@ def build_index(reports, destination):
                 db.executemany("INSERT INTO call_types VALUES(?,?,?,?)", [(record_id, *key) for key in keys])
         for row in csv_rows(reports / "gpu_unmapped_activity.csv"):
             insert("gpu_unmapped", row)
+        if (reports / 'manual_catalog.json').is_file():
+            catalog = read_json(reports / 'manual_catalog.json')
+            for kind in ('targets', 'candidates'):
+                for row in catalog[kind]:
+                    db.execute('INSERT INTO manual_groups VALUES(?,?,?,?,?,?,?,?)',
+                               (kind, row['id'], row.get('op_type',''), row.get('device_id',''), row.get('core_type',''),
+                                row['time_us'], ' '.join([row['cpu_name'],row['module'],*row['names']]).lower(),
+                                json.dumps(row, ensure_ascii=False)))
         db.commit()
+
+
+def manual_group(path, kind, ident):
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='manual_groups'").fetchone():
+            raise ValueError('旧报告不支持补充关联，请复用输入并重新分析')
+        row = db.execute('SELECT payload FROM manual_groups WHERE kind=? AND id=?', (kind,ident)).fetchone()
+        if not row:
+            raise ValueError('候选已不可用，请刷新后重试')
+        return json.loads(row[0])
+
+
+def manual_options(path, op_type, device_id, core_type, target_id='', search='', offset=0, gpu_offset=0):
+    from profiling_tools.manual_mapping import rank_candidate
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='manual_groups'").fetchone():
+            return {'supported': False, 'targets': [], 'candidates': [], 'target_total': 0, 'candidate_total': 0}
+        where, params = "kind='targets' AND op_type=? AND device_id=? AND core_type=?", (op_type,device_id,core_type)
+        total = db.execute('SELECT count(*) FROM manual_groups WHERE '+where,params).fetchone()[0]
+        targets = [json.loads(r[0]) for r in db.execute('SELECT payload FROM manual_groups WHERE '+where+' ORDER BY duration DESC,id LIMIT 20 OFFSET ?',(*params,offset))]
+        target = manual_group(path,'targets',target_id) if target_id else (targets[0] if targets else None)
+        if target and (target['op_type'],target['device_id'],target['core_type']) != params:
+            raise ValueError('所选 NPU 调用不属于当前类型')
+        limit = 20 if search else 3
+        candidates, candidate_total = [], 0
+        if target:
+            query = db.execute("SELECT payload FROM manual_groups WHERE kind='candidates' AND instr(search,lower(?))>0",(search,))
+            def ranked():
+                nonlocal candidate_total
+                for row in query:
+                    candidate_total += 1
+                    yield rank_candidate(target,json.loads(row[0]))
+            candidates = heapq.nsmallest(gpu_offset+limit,ranked(),key=lambda r:(-r['rank_score'],r['id']))[gpu_offset:]
+        return {'supported': True, 'targets': targets, 'target_total': total, 'target': target,
+                'candidates': candidates, 'candidate_total': candidate_total, 'candidate_limit':limit}
 
 
 def query_index(path, *, kind="operators", op_type=None, device_id=None, core_type=None,

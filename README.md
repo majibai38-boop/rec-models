@@ -4,6 +4,8 @@
 
 项目以 NPU `kernel_details.csv` 中的 kernel 类型为统计主轴，同时结合两端 trace 中的 CPU `aten::` 调用关系，将 GPU kernel 映射到对应的 NPU 类型。对于一对多、多对一和融合算子，不强制伪造逐 kernel 一一对应，而是保留可比子集、整体调用和未映射活动三类证据。
 
+Web 类型对比支持人工补充关联：为低覆盖率 NPU 调用推荐未分配 GPU kernel 组，核对证据、填写理由后更新网页和 Excel，支持撤销并保留自动分析原始运行。详见 [Web 使用说明](profiling_web/README.md#人工补充-gpu-关联)。
+
 ## 目录结构
 
 ```text

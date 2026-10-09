@@ -40,7 +40,7 @@ class InputSelectionError(ValueError):
         super().__init__("Input scope is ambiguous; run inspect and select PID/step or --all-steps.")
 
 
-def compare_profiles(config: CompareConfig, *, progress=None) -> Dict[str, Any]:
+def compare_profiles(config: CompareConfig, *, progress=None, manual_links=(), manual_enabled=False, manual_base=None) -> Dict[str, Any]:
     # Optional service adapter hook; no web dependencies in the analysis engine.
     def stage(name):
         if progress is not None:
@@ -55,6 +55,16 @@ def compare_profiles(config: CompareConfig, *, progress=None) -> Dict[str, Any]:
     started_at = time.perf_counter()
     stage("inspection")
     manifest = begin_run(config)
+    if manual_base is not None:
+        if manifest['producer'] != manual_base['producer'] or {
+            k: v['sha256'] for k,v in manifest['inputs'].items()
+        } != {k: v['sha256'] for k,v in manual_base['inputs'].items()}:
+            raise ValueError('输入或引擎已经改变；请重新分析后再确认关联')
+        scope = ('gpu_step', 'npu_step', 'gpu_pid', 'npu_pid', 'all_steps', 'include_communication',
+                 'op_prefix', 'flow_tolerance_us', 'diagnostic_coverage_threshold')
+        if any(getattr(config,k) != manual_base['parameters'][k] for k in scope):
+            raise ValueError('人工关联的比较范围已经改变')
+        manifest['manual_base_run_id'] = manual_base['run_id']
     inspection, loaded, details = inspect_inputs(config, retain_data=True)
     if inspection["errors"]:
         raise ValueError("; ".join(f"{e['side']}: {e['message']}" for e in inspection["errors"]))
@@ -103,6 +113,7 @@ def compare_profiles(config: CompareConfig, *, progress=None) -> Dict[str, Any]:
         unmatched_npu,
         op_map,
         diagnostic_coverage_threshold=config.diagnostic_coverage_threshold,
+        manual_links=manual_links, manual_enabled=manual_enabled,
     )
     reports_written_at = time.perf_counter()
     summary["timing_seconds"] = {

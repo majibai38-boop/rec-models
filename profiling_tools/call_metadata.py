@@ -55,3 +55,12 @@ def compare_metadata(npu, gpu, op_map=None):
     if npu.canonical_name != (op_map or {}).get(gpu.canonical_name, gpu.canonical_name):
         differences.append("name")
     return sorted(set(differences)), sorted(set(missing))
+
+
+def compare_match_metadata(npu, gpu, match, op_map=None):
+    differences, missing = compare_metadata(npu, gpu, op_map)
+    if match.alignment_basis == "layernorm_block_metadata":
+        # The complete block (not an individual shape/name) proved the module
+        # correspondence. Retain the original module names in evidence.
+        differences = [field for field in differences if field != "module"]
+    return differences, missing

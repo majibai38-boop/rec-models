@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Sequence, Tuple
 
 from .model import OpMatch, OpRecord, ParsedProfile
-from .parser import canonical_op_name
+from .parser import canonical_op_name, CUSTOM_COMPARABLE_OPS
+from .call_metadata import compare_metadata
+from .logical_recovery import recover_layernorm_blocks
 
 
 def load_op_map(path: str) -> Dict[str, str]:
@@ -290,18 +292,24 @@ def match_ops(
     if not op_map:
         paired_indices = _repair_logical_calls(gpu, npu, paired_indices)
         paired_indices = _recover_slice_copies(gpu, npu, paired_indices)
+        paired_indices = recover_layernorm_blocks(gpu, npu, paired_indices, semantic_anchors)
     paired_indices.sort(key=lambda item: (item[0], item[1]))
 
     matches: List[OpMatch] = []
     custom_names = {"nestedconcatfunc", "position_concat_fwd_kernel",
                     "create_position_offset_fwd_kernel"}
     custom_positions = []
+    strict_custom_positions = []
     for profile in (gpu, npu):
         groups = defaultdict(list)
+        strict_groups = defaultdict(list)
         for index, op in enumerate(profile.ops):
             if op.canonical_name in custom_names:
                 groups[(op.canonical_name, op.module_key)].append(index)
+            if op.canonical_name in CUSTOM_COMPARABLE_OPS:
+                strict_groups[(op.canonical_name, op.module_key)].append(index)
         custom_positions.append(groups)
+        strict_custom_positions.append(strict_groups)
     used_gpu = set()
     used_npu = set()
     next_match_id = 1
@@ -319,6 +327,8 @@ def match_ops(
             gpu.ops[gpu_index].canonical_name,
             gpu.ops[gpu_index].canonical_name,
         )
+        if alignment_basis == "layernorm_block_metadata":
+            score, confidence = max(score, 0.75), "high"
         custom_key = (mapped_name, gpu.ops[gpu_index].module_key)
         gpu_custom = custom_positions[0].get(custom_key, [])
         npu_custom = custom_positions[1].get(custom_key, [])
@@ -339,9 +349,23 @@ def match_ops(
             alignment_basis = "custom_scope_same_kernel"
         elif mapped_name in custom_names:
             score, confidence = min(score, 0.54), "low"
+        if mapped_name in CUSTOM_COMPARABLE_OPS:
+            left = strict_custom_positions[0].get(custom_key, [])
+            right = strict_custom_positions[1].get(custom_key, [])
+            # Validate the entire occurrence sequence, not just one convenient
+            # pair. Missing calls or conflicting metadata cannot be promoted.
+            compatible = bool(left and len(left) == len(right)) and all(
+                compare_metadata(npu.ops[n], gpu.ops[g]) == ([], [])
+                for g, n in zip(left, right)
+            )
+            if compatible and (gpu_index, npu_index) in zip(left, right):
+                score, confidence = max(score, 0.75), "high"
+                alignment_basis = "custom_scope_metadata_sequence"
+            else:
+                score, confidence = min(score, 0.54), "low"
         if (
             confidence == "low"
-            and mapped_name not in custom_names
+            and mapped_name not in custom_names | CUSTOM_COMPARABLE_OPS
             and mapped_name == npu.ops[npu_index].canonical_name
             and alignment_basis == "name_sequence"
             and gpu.ops[gpu_index].module_key

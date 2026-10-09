@@ -85,6 +85,7 @@ class Worker:
         config.update(output_dir=str(attempt / "reports"), require_explicit_scope=True)
         task = attempt / "task.json"
         write_json(task, {"kind": job["kind"], "config": config,
+                          "manual": job.get('manual',{}),
                           "parent": {"pid": os.getpid(), "created": psutil.Process().create_time()}})
         with (attempt / "worker.log").open("wb") as log:
             env = {**os.environ, "PYTHONIOENCODING": "utf-8"}

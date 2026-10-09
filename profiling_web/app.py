@@ -12,6 +12,7 @@ from pathlib import Path
 import secrets
 import shutil
 import time
+import uuid
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -20,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .index import call_evidence, downloadable, query_index
+from .index import call_evidence, downloadable, query_index, manual_options, manual_group
 from .settings import INPUTS, Settings, disk_usage
 from .store import Conflict, Store
 from .worker import worker_lock
@@ -83,6 +84,19 @@ class RunOptions(BaseModel):
 
 class Login(BaseModel):
     token: str = Field(max_length=512)
+
+
+class ManualConfirmation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    attempt: str = Field(pattern=r'^[0-9a-f]{32}$')
+    target_id: str = Field(min_length=1, max_length=100)
+    candidate_id: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ManualUndo(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    attempt: str = Field(pattern=r'^[0-9a-f]{32}$')
 
 
 def session_cookie(token, expiry):
@@ -344,6 +358,50 @@ def create_app(settings=None):
         if job["status"] != "succeeded" or not job["summary"]:
             raise HTTPException(409, "结果尚未通过校验或任务未完成")
         return job, store.path(job_id) / "attempts" / job["attempt"]
+
+    @app.get('/api/jobs/{job_id}/manual-options')
+    def manual_candidates(job_id: str, op_type: str = Query(...,max_length=200),
+                          device_id: str = Query(...,max_length=64), core_type: str = Query(...,max_length=100),
+                          target_id: str = Query('',max_length=100), search: str = Query('',max_length=200),
+                          offset: int = Query(0,ge=0,le=100000), gpu_offset: int = Query(0,ge=0,le=100000)):
+        job, root = result_paths(job_id)
+        try:
+            result = manual_options(root/'index.sqlite',op_type,device_id,core_type,target_id,search,offset,gpu_offset)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from exc
+        result['supported'] = result['supported'] and (root/'reports/manual_catalog.json').is_file()
+        result.update(attempt=job['attempt'], links=[r for r in job['manual'].get('links',[])
+                      if (r['op_type'],r['device_id'],r['core_type']) == (op_type,device_id,core_type)])
+        return result
+
+    @app.post('/api/jobs/{job_id}/manual-links',status_code=202)
+    def confirm_manual(job_id: str, body: ManualConfirmation):
+        job, root = result_paths(job_id)
+        if job['attempt'] != body.attempt:
+            raise Conflict('结果已变化，请刷新后重试')
+        if not body.reason.strip():
+            raise HTTPException(422,'请填写人工确认理由')
+        links = job['manual'].get('links',[])
+        if len(links) >= 100:
+            raise HTTPException(422,'单任务最多支持 100 组人工关联')
+        try:
+            target = manual_group(root/'index.sqlite','targets',body.target_id)
+            candidate = manual_group(root/'index.sqlite','candidates',body.candidate_id)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from exc
+        link = {'id':uuid.uuid4().hex, 'npu_indices':target['indices'], 'gpu_indices':candidate['indices'],
+                'op_type':target['op_type'],'device_id':target['device_id'],'core_type':target['core_type'],
+                'reason':body.reason.strip(), 'created':time.time(), 'source_attempt':body.attempt,
+                'npu_time_us':target['time_us'], 'gpu_time_us':candidate['time_us']}
+        return store.enqueue_manual(job_id,body.attempt,[*links,link])
+
+    @app.post('/api/jobs/{job_id}/manual-links/{link_id}/undo',status_code=202)
+    def undo_manual(job_id: str, link_id: str, body: ManualUndo):
+        job, _ = result_paths(job_id)
+        links = job['manual'].get('links',[])
+        if not any(r['id'] == link_id for r in links):
+            raise HTTPException(404,'人工关联不存在')
+        return store.enqueue_manual(job_id,body.attempt,[r for r in links if r['id'] != link_id])
 
     @app.get("/api/jobs/{job_id}/results")
     def results(job_id: str, kind: str = "operators", op_type: str | None = None,

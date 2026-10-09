@@ -3,7 +3,7 @@ from collections import Counter, defaultdict
 import hashlib
 import json
 
-from .call_metadata import compare_metadata
+from .call_metadata import compare_match_metadata
 from .device_compare import encoded, scoped_indices
 
 
@@ -102,7 +102,7 @@ def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_
         types = {npu.kernels[i].detail.op_type for i in nk}
         if len(types) < 2 and not noncomparable.intersection(nk):
             continue
-        differences, missing = compare_metadata(nop, gop, op_map)
+        differences, missing = compare_match_metadata(nop, gop, match, op_map)
         trusted = match.confidence in {"high", "medium"} and by_npu[ni] == by_gpu[gi] == 1
         strong_links = {"external_id", "runtime_correlation", "torch_to_npu", "host_to_device_queue", "host_to_device_thread"}
         owner_ok = all(npu.kernels[i].link_method in strong_links for i in nk)

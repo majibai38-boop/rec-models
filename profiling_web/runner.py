@@ -52,7 +52,15 @@ def run(task_path):
             write_json(attempt / "result.json", {"status": "failed" if report["status"] == "invalid" else "needs_selection", "inspection": report,
                                                  "error": "预检查失败，请查看输入错误并新建任务" if report["status"] == "invalid" else ""})
         else:
-            summary = compare_profiles(config, progress=progress)
+            state = task.get('manual',{}) if task['kind'] == 'manual' else {}
+            base = None
+            if state:
+                import re
+                if not re.fullmatch(r'[0-9a-f]{32}',state['base_attempt']):
+                    raise ValueError('Invalid base attempt')
+                base = json.loads((attempt.parent/state['base_attempt']/'reports/run_manifest.json').read_text(encoding='utf-8'))
+            summary = compare_profiles(config, progress=progress, manual_enabled=True,
+                                       manual_links=state.get('links',[]), manual_base=base)
             if summary["validation"]["status"] != "valid":
                 raise ValueError("Result validation failed")
             progress("indexing")

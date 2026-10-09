@@ -9,10 +9,11 @@ from statistics import mean
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .model import BundleMetrics, KernelRecord, OpMatch, OpRecord, ParsedProfile, bundle_metrics
-from .parser import kernel_api_expected_ops, kernel_api_is_auxiliary
+from .call_metadata import compare_metadata, compare_match_metadata
+from .parser import kernel_api_expected_ops, kernel_api_is_auxiliary, CUSTOM_COMPARABLE_OPS
 from .xlsx_writer import TableSheet, write_grouped_workbook_xlsx
 from .device_compare import (
-    enrich_memory_mappings, memory_diagnostic_rows,
+    enrich_memory_mappings, memory_diagnostic_rows, scoped_indices,
     build_cpu_bundle_rows, summarize_cpu_bundles,
 )
 from .precision_analysis import build_precision_rows
@@ -23,7 +24,7 @@ from .coverage_diagnostics import (
 )
 
 
-_SHARED_GPU_BUNDLE_MODES = {"npu_gpu_bundle_shared", "gpu_child_shared_bundle"}
+_SHARED_GPU_BUNDLE_MODES = {"npu_gpu_bundle_shared", "gpu_child_shared_bundle", "logical_scope_shared_bundle", "manual_scope_shared_bundle"}
 
 
 def _ratio(numerator: float, denominator: float) -> Any:
@@ -78,6 +79,13 @@ _OP_PRIMARY_TYPE_ALIASES = {
     "aten::clamp": {"clipbyvaluev2"},
     "aten::div": {"realdiv"},
     "aten::embedding": {"gatherv2"},
+    "aten::index_select": {"gatherv2"},
+    "aten::_convolution": {"conv2dv2"},
+    "aten::convolution": {"conv2dv2"},
+    "aten::gelu": {"geluv2"},
+    "ropefunc": {"ropekernelflattened"},
+    "customop::triton_target_attention_nobitwise_varlen": {"targetattentionnobitwisevarlenforwardkernel"},
+    "customop::triton_layernorm_forward": {"fasterlayernormtinyforwardkernel"},
     "aten::native_layer_norm": {"layernormv4"},
     "aten::layer_norm": {"layernormv4"},
     "aten::ne": {"notequal"},
@@ -88,6 +96,7 @@ _OP_PRIMARY_TYPE_ALIASES = {
     "aten::concat": {"concatd"},
     "aten::sum": {"reducesum"},
     "aten::mean": {"reducemean"},
+    "aten::var": {"reducevar"},
     "aten::max": {"reducemax"},
     "aten::min": {"reducemin"},
     "aten::mul": {"muls"},
@@ -531,6 +540,17 @@ def build_npu_kernel_gpu_mapping_rows(
             gpu.ops[match.gpu_op_index].kernel_indices,
             key=lambda index: gpu.kernels[index].event.timestamp_us,
         )
+        if npu_op.canonical_name in CUSTOM_COMPARABLE_OPS and (
+            compare_metadata(npu_op, gpu.ops[match.gpu_op_index]) != ([], [])
+            or any(npu.kernels[i].link_method not in {"external_id", "runtime_correlation", "torch_to_npu",
+                       "host_to_device_queue", "host_to_device_thread"} for i in npu_kernel_indices)
+            or any(gpu.kernels[i].link_method not in {"external_id", "runtime_correlation"} for i in gpu_kernel_indices)
+            or len({(gpu.kernels[i].event.pid, str(gpu.kernels[i].event.args.get("device", "")))
+                    for i in gpu_kernel_indices}) > 1
+        ):
+            for index in npu_kernel_indices:
+                assignments[index] = (match, "untrusted_cpu_match", [])
+            continue
         if not gpu_kernel_indices:
             for kernel_index in npu_kernel_indices:
                 assignments[kernel_index] = (match, "gpu_op_without_kernel", [])
@@ -568,6 +588,10 @@ def build_npu_kernel_gpu_mapping_rows(
                     npu_op, npu.kernels[kernel_index]
                 )
             ]
+            if npu_op.canonical_name == "aten::index_select" and compare_metadata(
+                npu_op, gpu.ops[match.gpu_op_index]
+            ) != ([], []):
+                primary_npu_indices = []
             if len(primary_npu_indices) == 1:
                 primary_set = set(primary_npu_indices)
                 assignments[primary_npu_indices[0]] = (
@@ -646,7 +670,23 @@ def build_npu_kernel_gpu_mapping_rows(
         key=lambda match: -_op_depth(gpu.ops, match.gpu_op_index),
     )
     for match in fallback_matches:
+        guarded_scope = npu.ops[match.npu_op_index].canonical_name in (
+            {"aten::_convolution", "aten::convolution"} | CUSTOM_COMPARABLE_OPS
+        )
+        if guarded_scope:
+            if compare_metadata(npu.ops[match.npu_op_index], gpu.ops[match.gpu_op_index]) != ([], []):
+                continue
         gpu_kernel_indices = descendant_kernels[match.gpu_op_index]
+        if guarded_scope and (
+            any(gpu.kernels[i].link_method not in {"external_id", "runtime_correlation"}
+                for i in gpu_kernel_indices)
+            or len({(gpu.kernels[i].event.pid, str(gpu.kernels[i].event.args.get("device", "")))
+                    for i in gpu_kernel_indices}) > 1
+            or any(npu.kernels[i].link_method not in {"external_id", "runtime_correlation", "torch_to_npu",
+                       "host_to_device_queue", "host_to_device_thread"}
+                   for i in npu.ops[match.npu_op_index].kernel_indices)
+        ):
+            continue
         if npu.ops[match.npu_op_index].canonical_name == "aten::count_nonzero":
             # ne/copy children have distinct semantics and may already be
             # accounted for. Only the remaining sum computes ReduceSum.
@@ -732,6 +772,52 @@ def build_npu_kernel_gpu_mapping_rows(
                     )
                 continue
         used_gpu_kernel_indices.update(gpu_kernel_indices)
+
+    # Recover a complete single-type logical scope when the NPU implementation
+    # owns its kernel in a nested overload (e.g. gelu.out). Keep actual owners;
+    # the CPU Match ID explicitly identifies the comparison's parent scope.
+    nscope, gscope, mscope = scoped_indices(npu), scoped_indices(gpu), scoped_indices(gpu, True)
+    strong_links = {"external_id", "runtime_correlation", "torch_to_npu",
+                    "host_to_device_queue", "host_to_device_thread"}
+    nmatch_counts = Counter(m.npu_op_index for m in matches)
+    gmatch_counts = Counter(m.gpu_op_index for m in matches)
+    for match in sorted(matches, key=lambda m: -_op_depth(npu.ops, m.npu_op_index)):
+        ni, gi = match.npu_op_index, match.gpu_op_index
+        nop, gop = npu.ops[ni], gpu.ops[gi]
+        if not _is_trusted(match) or nmatch_counts[ni] != 1 or gmatch_counts[gi] != 1:
+            continue
+        # Scope lifting is not a generic relaxation of helper/Cast semantics.
+        if nop.canonical_name not in {"aten::gelu", "aten::_convolution", "aten::convolution"} and not (
+            match.alignment_basis == "layernorm_block_metadata" and nop.canonical_name in {"aten::mean", "aten::var"}
+        ):
+            continue
+        differences, missing = compare_match_metadata(nop, gop, match)
+        nk, gk = nscope[ni], gscope[gi]
+        if differences or missing or not nk or not gk or mscope[gi]:
+            continue
+        if any(i in used_gpu_kernel_indices for i in gk):
+            continue
+        if any(assignments.get(i, (None, "", []))[2] for i in nk):
+            continue
+        if any(assignments.get(i, (None, "", []))[1] in {
+            "api_semantic_conflict_unmapped", "api_helper_unmapped"
+        } for i in nk):
+            continue
+        kernels = [npu.kernels[i] for i in nk]
+        if any(k.detail is None or not _is_semantic_primary_kernel(nop, k)
+               or kernel_api_is_auxiliary(k) or k.link_method not in strong_links for k in kernels):
+            continue
+        if len({(k.detail.device_id, k.detail.op_type, k.detail.core_type) for k in kernels}) != 1:
+            continue
+        if any(gpu.kernels[i].link_method not in {"external_id", "runtime_correlation"} for i in gk):
+            continue
+        if len({(gpu.kernels[i].event.pid, str(gpu.kernels[i].event.args.get("device", "")))
+                for i in gk}) != 1:
+            continue
+        mode = "logical_scope_bundle" if len(nk) == 1 else "logical_scope_shared_bundle"
+        for i in nk:
+            assignments[i] = (match, mode, gk)
+        used_gpu_kernel_indices.update(gk)
 
     # Some fused/custom kernels are present in kernel_details.csv but have no
     # NPU flow edge or owning aten op. For explicitly known fused equivalents,
@@ -864,6 +950,9 @@ def build_npu_kernel_gpu_mapping_rows(
                 "Comparable": comparable,
                 "Accounted": accounted,
                 "GPU Kernel Source": (
+                    "logical_cpu_scope"
+                    if mode.startswith("logical_scope_")
+                    else
                     "descendant_op"
                     if mode.startswith("gpu_child_")
                     else "explicit_fused_op"
@@ -1703,6 +1792,8 @@ def write_reports(
     op_map: Mapping[str, str],
     *,
     diagnostic_coverage_threshold: float = 90.0,
+    manual_links=(),
+    manual_enabled=False,
 ) -> Dict[str, Any]:
     validate_threshold(diagnostic_coverage_threshold)
     output = Path(output_dir)
@@ -1711,6 +1802,9 @@ def write_reports(
     match_rows = build_match_rows(gpu, npu, matches)
     mapping_rows = build_gpu_kernel_mapping_rows(gpu, npu, matches)
     npu_kernel_mapping_rows = build_npu_kernel_gpu_mapping_rows(gpu, npu, matches)
+    if manual_enabled or manual_links:
+        from .manual_mapping import apply_links
+        apply_links(gpu, npu, npu_kernel_mapping_rows, manual_links)
     cpu_bundle_rows = build_cpu_bundle_rows(gpu, npu, matches, npu_kernel_mapping_rows)
     cpu_bundle_statistic_rows = summarize_cpu_bundles(cpu_bundle_rows)
     precision_rows, precision_diagnostics = build_precision_rows(gpu, npu, matches)
@@ -1731,6 +1825,13 @@ def write_reports(
     annotate_type_calls(npu_gpu_statistic_rows, npu_kernel_mapping_rows, whole_call_rows,
                         precision_rows, coverage_diagnostics)
     add_coverage_conclusions(npu_gpu_statistic_rows, coverage_diagnostics)
+    for row in npu_gpu_statistic_rows:
+        ids = {r.get('Manual Link ID') for r in npu_kernel_mapping_rows
+               if (r['Device_id'], r['OP Type'], r['Core Type']) == (row['Device_id'], row['OP Type'], row['Core Type'])
+               and r.get('Manual Link ID')}
+        row['Manual Mapping Count'] = len(ids)
+        if ids:
+            row['排查结论'] = f'人工确认 {len(ids)} 组（非自动验证）；' + row.get('排查结论', '')
     npu_gpu_statistic_rows, gpu_unmapped_rows, gpu_accounting = complete_gpu_accounting(
         gpu, npu_kernel_mapping_rows, npu_gpu_statistic_rows,
         whole_call_rows=[*precision_rows, *cpu_bundle_rows, *fused_op_mapping_rows],
@@ -2022,7 +2123,7 @@ def write_reports(
         is_intentional_shared_bundle = (
             all(row["Mapping Mode"] in _SHARED_GPU_BUNDLE_MODES for row in users)
             and len({
-                (str(row["CPU Match ID"]), str(row["OP Type"]), str(row["Core Type"]))
+                (str(row.get('Manual Link ID') or row["CPU Match ID"]), str(row["OP Type"]), str(row["Core Type"]))
                 for row in users
             }) == 1
         )
@@ -2168,6 +2269,16 @@ def write_reports(
             "precision_cast_time_us": "observed conversion kernel cost, not predicted speedup; GPU may convert internally without a standalone Cast",
         },
     }
+    if manual_enabled:
+        from .manual_mapping import catalog
+        from .provenance import write_json
+        write_json(output / 'manual_catalog.json', catalog(gpu, npu, matches, npu_kernel_mapping_rows))
+        summary['reports'].append('manual_catalog.json')
+    if manual_enabled or manual_links:
+        from .provenance import write_json
+        write_json(output / 'manual_links.json', list(manual_links))
+        summary['reports'].append('manual_links.json')
+        summary['manual_link_count'] = len(manual_links)
     with (output / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
         handle.write("\n")

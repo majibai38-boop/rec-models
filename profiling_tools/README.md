@@ -292,6 +292,16 @@ JSON v2 包含 `selection`（筛选口径）、`summary`、`types`（类型与�
 python -m profiling_tools --gpu-trace profiling_tools/example/demo1/gpu/trace.json --npu-trace profiling_tools/example/demo1/npu/trace_view.json --npu-kernel-details profiling_tools/example/demo1/npu/kernel_details.csv --gpu-step 15 --npu-step 15 --output-dir profiling_tools/example/demo1/result_npu_first_v14
 ```
 
+### Rules 2：有证据约束的调用范围恢复
+
+- 卷积支持 `_convolution / convolution -> Conv2DV2`，`index_select -> GatherV2` 区分主计算与 Transpose 辅助任务。卷积子调用与 GatherV2 混合 bundle 恢复要求完整 CPU 元数据一致。
+- NPU kernel 位于嵌套 GELU overload 时，可以从可信父调用恢复单类型 scope。保留实际 NPU owner，并通过 `CPU Match ID` 指向比较父调用。`logical_scope_bundle` / `logical_scope_shared_bundle` 明示范围；后者只按 bundle 比较、不分摊单 kernel 比值。GPU 工作已占用、混合类型、跨设备、弱 owner、API 语义冲突、缺失元数据或 scope 含 trace-only 任务时不恢复。
+- 两侧保留 `RopeFunc`、`customop::triton_target_attention_nobitwise_varlen`、`customop::triton_layernorm_forward`。通过已有 External ID / correlation / NPU flow 恢复 owner；只有同模块完整调用序列的数量、shape、dtype 一致才标记 `custom_scope_metadata_sequence`。不按 device kernel 名称相似或总数量直接配对。
+- LayerNorm 模块编号仅在两个可信锚点之间，完整 mean/sub/var/div/add 等原语序列元数据一致且候选唯一时允许恢复，标记 `layernorm_block_metadata`。重复序列、真实 shape 冲突及缺失元数据保留未匹配；原模块名仍保留在报告中。跨模块且缺少完整块证据、或存在其他元数据冲突的 LayerNorm `same_name_recovery` 不再作为配对保留，可能降低局部小算子的覆盖率。
+- 这些规则不把 Cast、Slice、Transpose 等辅助工作的 GPU 时间重复分配到多个类型；已在整体视图比较不等于逐类型独立可比。
+
+无需新增命令行参数。运行中的 Web 服务需重启后重新分析，已有任务的历史报告不会自动更新；独立安装的 skill 分发包需要重新构建并更新才能使用新规则。
+
 ### 运行回归测试
 
 ```bash

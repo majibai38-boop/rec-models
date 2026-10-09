@@ -4,6 +4,7 @@ import Chart from './Chart.vue'
 import WholeCallTable from './WholeCallTable.vue'
 import TypeTable from './TypeTable.vue'
 import EvidenceDrawer from './EvidenceDrawer.vue'
+import ManualLinkDialog from './ManualLinkDialog.vue'
 import { cleanView, readLocation, viewQuery, readSavedViews, csvCell, normalizeStep } from './viewState.js'
 const logged = ref(false), token = ref(''), error = ref(''), busy = ref(false), config = ref({})
 const jobs = ref([]), job = ref(null), tab = ref('overview'), name = ref(''), files = reactive({}), uploading = ref(''), uploadPercent = ref(0)
@@ -13,6 +14,9 @@ const jobSearch = ref(''), jobStatus = ref(''), jobArchived = ref(false), jobPag
 const editingName = ref(false), editedName = ref(''), service = ref(null), loadingResults = ref(false), loadingRecords = ref(false)
 const savedViews = ref(readSavedViews(localStorage.getItem('profiling-views-v1'))), savedViewIndex = ref(''), viewName = ref(''), savingView = ref(false)
 const trail = ref([]), chartCache = new Map()
+const manualType = ref(null)
+function manualSubmitted(next) {job.value=next;manualType.value=null;chartCache.clear();action(refresh)}
+function manualUpgrade() {manualType.value=null;cloneJob()}
 let restoring = false, lastRefresh = 0
 const snapshot = () => cleanView({tab:tab.value,search:search.value,sort:sort.value,hotspot:hotspot.value,page:page.value,recordPage:recordPage.value,recordKind:recordKind.value,scope:scope.value,callFilter:callFilter.value,callSearch:callSearch.value,callSort:callSort.value,callStatus:callStatus.value,detailed:detailed.value,focus:focus.value})
 function applyView(v) {
@@ -98,6 +102,7 @@ async function login() { await action(async () => { await api('/session', 'POST'
 async function logout() { await action(async () => { await api('/session', 'DELETE'); logged.value = false; job.value = null }) }
 async function refresh() { const [cfg,data]=await Promise.all([api('/config'),api('/jobs?'+new URLSearchParams({offset:jobPage.value*30,limit:30,search:jobSearch.value,status:jobStatus.value,archived:jobArchived.value}))]);config.value=cfg;jobs.value=data.items;jobTotal.value=data.total;lastRefresh=Date.now() }
 async function select(id, view=null) {
+  manualType.value=null
   const sequence = ++selectionSequence
   const next = await api('/jobs/' + id)
   if (sequence !== selectionSequence) return
@@ -145,7 +150,7 @@ async function loadResults() {
   loadingResults.value=true;rows.value=[]
   try {
     const params={search:search.value,sort:sort.value,limit:30,offset:page.value*30,...(tab.value==='coverage'?(scope.value||{}):{}),...(hotspot.value?{coverage_max:90,npu_ratio_min:1}:{})}
-    const chartParams={...params,sort:'npu_time',limit:200,offset:0}, key=id+JSON.stringify(chartParams)
+    const chartParams={...params,sort:'npu_time',limit:200,offset:0}, key=id+job.value.attempt+JSON.stringify(chartParams)
     const [data,chart]=await Promise.all([api(resultUrl(params)),chartCache.has(key)?Promise.resolve(chartCache.get(key)):api(resultUrl(chartParams))])
     if(job.value?.id!==id||sequence!==resultsSequence) return
     if(chartCache.size>20) chartCache.clear();chartCache.set(key,chart)
@@ -223,7 +228,7 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
             <div class="toolbar"><label class="check"><input type="checkbox" v-model="detailed">详细模式</label><select v-model="savedViewIndex" @change="useView" aria-label="已保存视图"><option value="">选择已保存视图</option><option v-for="(v,i) in savedViews" :key="i" :value="String(i)">{{ v.name }}</option></select><button @click="savingView=!savingView">保存视图</button><form v-if="savingView" class="toolbar" @submit.prevent="saveView"><input v-model="viewName" aria-label="视图名称" placeholder="输入视图名称" maxlength="60" required><button type="submit">确认保存视图</button><button type="button" @click="savingView=false">取消</button></form><button v-if="savedViewIndex!==''" @click="deleteView">删除视图</button><button :disabled="busy" @click="exportView">导出当前筛选 CSV</button></div>
             <p class="muted small">视图设置只影响展示。分析范围和诊断生成阈值的变更需“复用输入，新建分析”。</p>
             <p v-if="loadingResults || loadingRecords" role="status">正在加载结果…</p>
-            <template v-if="tab === 'overview' || tab === 'coverage'"><div class="toolbar"><input v-model="search" placeholder="搜索 OP Type" @keyup.enter="filter" aria-label="搜索类型"><select v-model="sort" @change="filter" aria-label="排序"><option value="npu_time">NPU 耗时降序</option><option value="coverage">可比时间覆盖率升序</option><option value="ratio">可比性能比降序</option><option value="name">类型名称</option></select><label class="check"><input type="checkbox" v-model="hotspot" @change="filter">NPU 占比 &gt; 1% 且可比时间覆盖率 &lt; 90%</label><button @click="filter">筛选</button></div><Chart v-if="tab === 'coverage'" :option="scatter" @select="clickedChart"/><p v-if="tab === 'coverage'" class="muted small">气泡大小表示不可比较耗时，不代表可节省时间。图表最多展示筛选后前 200 个类型。</p><p class="filter-context">当前类型范围：{{ scope ? scope.op_type+' / '+scope.device_id+' / '+scope.core_type : '全部类型' }} · 搜索 {{ search || '不限' }} · {{ hotspot?'高耗时低覆盖率':'不限覆盖率' }} <button @click="clearFilters">清除筛选</button></p><TypeTable v-if="!loadingResults" :rows="rows" :detailed="detailed" @type="openType" @whole="openWhole" @report="openReport"/><div class="pagination"><span>共 {{ total }} 行 · 第 {{ page + 1 }} 页</span><button :disabled="page === 0" @click="page--; action(loadResults)">上一页</button><button :disabled="(page + 1) * 30 >= total" @click="page++; action(loadResults)">下一页</button></div></template>
+            <template v-if="tab === 'overview' || tab === 'coverage'"><div class="toolbar"><input v-model="search" placeholder="搜索 OP Type" @keyup.enter="filter" aria-label="搜索类型"><select v-model="sort" @change="filter" aria-label="排序"><option value="npu_time">NPU 耗时降序</option><option value="coverage">可比时间覆盖率升序</option><option value="ratio">可比性能比降序</option><option value="name">类型名称</option></select><label class="check"><input type="checkbox" v-model="hotspot" @change="filter">NPU 占比 &gt; 1% 且可比时间覆盖率 &lt; 90%</label><button @click="filter">筛选</button></div><Chart v-if="tab === 'coverage'" :option="scatter" @select="clickedChart"/><p v-if="tab === 'coverage'" class="muted small">气泡大小表示不可比较耗时，不代表可节省时间。图表最多展示筛选后前 200 个类型。</p><p class="filter-context">当前类型范围：{{ scope ? scope.op_type+' / '+scope.device_id+' / '+scope.core_type : '全部类型' }} · 搜索 {{ search || '不限' }} · {{ hotspot?'高耗时低覆盖率':'不限覆盖率' }} <button @click="clearFilters">清除筛选</button></p><TypeTable v-if="!loadingResults" :rows="rows" :detailed="detailed" @type="openType" @whole="openWhole" @report="openReport" @manual="manualType=$event"/><div class="pagination"><span>共 {{ total }} 行 · 第 {{ page + 1 }} 页</span><button :disabled="page === 0" @click="page--; action(loadResults)">上一页</button><button :disabled="(page + 1) * 30 >= total" @click="page++; action(loadResults)">下一页</button></div></template>
             <template v-if="tab === 'distribution'"><h2>类型耗时 Top 12</h2><p class="muted">NPU 全类型时间与已分配 GPU 时间并列；覆盖率低时不是完整同类性能比较。点击图形查看类型证据。</p><Chart :option="bars" @select="clickedChart"/><div class="accounting"><div v-for="kind in ['kernel', 'memory']" :key="kind"><h3>GPU {{ kind === 'kernel' ? '计算 kernel' : '内存活动' }}</h3><p>已映射 {{ summary.gpu_accounting[kind].mapped_count }} 个 / {{ fmt(summary.gpu_accounting[kind].mapped_time_us) }} μs</p><p>未映射 {{ summary.gpu_accounting[kind].unmapped_count }} 个 / {{ fmt(summary.gpu_accounting[kind].unmapped_time_us) }} μs</p></div></div><h3>GPU 未映射事件</h3></template>
             <template v-if="tab === 'coverage'"><div class="panel-heading evidence-heading"><h2>{{ scope ? `${scope.op_type} · ${scope.device_id}/${scope.core_type}` : '所有低覆盖率类型' }} / 证据</h2><button v-if="scope" @click="clearFilters()">清除类型选择</button></div><div class="toolbar"><select v-model="recordKind" aria-label="证据类型"><option value="reasons">原因汇总与排查建议</option><option value="mappings">逐 kernel 映射</option><option value="diagnoses">逐 kernel 诊断</option></select><span class="muted">Accounted 不等于 Comparable；原因是候选解释，不自动证明后端缺陷。</span></div></template>
             <template v-if="tab === 'whole' || tab === 'calls'">
@@ -241,5 +246,6 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
       <footer class="main-footer">PROFILING WORKBENCH <span>证据优先 · 独立计时 · 可追溯结果</span></footer>
     </main>
     <EvidenceDrawer v-if="detail" :record="detail" :evidence="evidence" @close="closeDetail"/>
+    <ManualLinkDialog v-if="manualType" :key="job.id" :job="job" :type="manualType" :api="api" @close="manualType=null" @submitted="manualSubmitted" @upgrade="manualUpgrade"/>
   </div>
 </template>

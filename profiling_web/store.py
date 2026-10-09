@@ -27,6 +27,8 @@ class Store:
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
             if "archived" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            if "manual" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN manual TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def connect(self):
@@ -50,7 +52,7 @@ class Store:
         if row is None:
             raise KeyError(job_id)
         item = dict(row)
-        for key in ("inputs", "options", "inspection", "summary"):
+        for key in ("inputs", "options", "inspection", "summary", "manual"):
             item[key] = json.loads(item[key]) if item[key] else None
         return item
 
@@ -91,7 +93,14 @@ class Store:
         return self.get(job_id)
 
     def update(self, job_id, **fields):
-        allowed = {"status", "stage", "kind", "attempt", "options", "inputs", "inspection", "summary", "error", "cancel", "uploading", "started"}
+        if fields.get('status') in {'failed','cancelled','interrupted'}:
+            if self.restore_manual(job_id, fields.get('error','人工关联未完成')):
+                return
+        if fields.get('status') == 'succeeded':
+            current = self.get(job_id)
+            if current['manual'].get('pending'):
+                fields['manual'] = {k:v for k,v in current['manual'].items() if k != 'pending'}
+        allowed = {"status", "stage", "kind", "attempt", "options", "inputs", "inspection", "summary", "error", "cancel", "uploading", "started", "manual"}
         if not fields.keys() <= allowed:
             raise ValueError("Unknown task field")
         fields["updated"] = time.time()
@@ -122,6 +131,33 @@ class Store:
                        (kind, json.dumps(options or {}), time.time(), job_id))
         return self.get(job_id)
 
+    def enqueue_manual(self, job_id, expected_attempt, links):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
+            if not row or row['status'] != 'succeeded' or row['attempt'] != expected_attempt:
+                raise Conflict('结果已变化或正在分析，请刷新后重试')
+            old = json.loads(row['manual'])
+            state = {'base_attempt': old.get('base_attempt',row['attempt']), 'links':links,
+                     'pending': {'attempt':row['attempt'], 'summary':json.loads(row['summary']), 'manual':old}}
+            db.execute("UPDATE jobs SET status='queued',stage='queued',kind='manual',manual=?,cancel=0,error='',updated=? WHERE id=?",
+                       (json.dumps(state,ensure_ascii=False),time.time(),job_id))
+        return self.get(job_id)
+
+    def restore_manual(self, job_id, error, expected_status=None):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT manual,status FROM jobs WHERE id=?',(job_id,)).fetchone()
+            if expected_status is not None and (not row or row[1] != expected_status):
+                return False
+            pending = json.loads(row[0]).get('pending') if row else None
+            if not pending:
+                return False
+            db.execute("UPDATE jobs SET status='succeeded',stage='succeeded',kind='compare',attempt=?,summary=?,manual=?,error=?,cancel=0,updated=? WHERE id=?",
+                       (pending['attempt'],json.dumps(pending['summary']),json.dumps(pending['manual']),
+                        '人工关联未生效，已保留上一份结果：'+error,time.time(),job_id))
+        return True
+
     def claim(self):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -134,6 +170,9 @@ class Store:
 
     def cancel(self, job_id):
         self.get(job_id)
+        current = self.get(job_id)
+        if current['status'] == 'queued' and self.restore_manual(job_id, '用户取消', expected_status='queued'):
+            return self.get(job_id)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -146,5 +185,9 @@ class Store:
         return self.get(job_id)
 
     def recover(self):
+        with self.connect() as db:
+            ids = [r[0] for r in db.execute("SELECT id FROM jobs WHERE status='running' AND kind='manual'")]
+        for ident in ids:
+            self.restore_manual(ident,'Worker 已重启')
         with self.connect() as db:
             db.execute("UPDATE jobs SET status='interrupted',stage='interrupted',error='Worker 已重启，请手动重试',updated=? WHERE status='running'", (time.time(),))
