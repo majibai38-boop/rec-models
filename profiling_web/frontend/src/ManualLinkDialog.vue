@@ -6,6 +6,9 @@ const data = ref(null), selected = ref(''), targetId = ref(''), search = ref('')
 const loading = ref(false), saving = ref(false), error = ref(''), offset = ref(0), gpuOffset = ref(0), dialog = ref(null)
 const pendingUndo = ref('')
 const batchPreview = ref(null), preparingBatch = ref(false)
+const confirmedTemplate = ref(false)
+const batchMode = computed(() => confirmedTemplate.value ? 'confirmed_template' : 'strict')
+const basisLabel = (basis) => ({aligned_cpu_scope:'已有 CPU 对齐', manual_template_order:'相同元数据 + 调用顺序', manual_confirmed_template_order:'人工确认两侧模板 + 调用顺序'}[basis] || basis)
 let batchSequence = 0
 let sequence = 0, previousFocus
 const fmt = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 3 })
@@ -14,7 +17,8 @@ const target = computed(() => data.value?.target)
 const batchCoverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (batchPreview.value?.npu_time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
-watch(selected, () => {batchSequence++; batchPreview.value=null; preparingBatch.value=false})
+watch(selected, () => {confirmedTemplate.value=false; batchSequence++; batchPreview.value=null; preparingBatch.value=false})
+watch(confirmedTemplate, () => {batchSequence++; batchPreview.value=null; preparingBatch.value=false; error.value=''})
 const coverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (target.value?.time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
@@ -47,7 +51,7 @@ async function previewBatch() {
   preparingBatch.value=true; batchPreview.value=null; error.value=''
   try {
     const result = await props.api(`/jobs/${props.job.id}/manual-batch/preview`, 'POST', {
-      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value})
+      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, mode:batchMode.value})
     if (seq === batchSequence) batchPreview.value=result
   } catch(e) {if (seq === batchSequence) error.value=e.message}
   finally {if (seq === batchSequence) preparingBatch.value=false}
@@ -58,7 +62,7 @@ async function submitBatch() {
   try {
     emit('submitted', await props.api(`/jobs/${props.job.id}/manual-batch`, 'POST', {
       attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value,
-      preview_token:batchPreview.value.preview_token, reason:reason.value.trim()}))
+      mode:batchPreview.value.mode, preview_token:batchPreview.value.preview_token, reason:reason.value.trim()}))
   } catch(e) {error.value=e.message} finally {saving.value=false}
 }
 async function undo(link) {
@@ -111,22 +115,35 @@ Dtype: {{ JSON.stringify(target.dtypes) }}</pre></details>
               <details><summary>kernel 名称与元数据</summary><pre>{{ r.names.join('\n') }}
 Shape: {{ JSON.stringify(r.shapes) }}
 Dtype: {{ JSON.stringify(r.dtypes) }}</pre></details>
+              <details v-if="r.npu_comparison_scope && r.npu_comparison_scope.cpu_index !== target.cpu_index"><summary>用于比较的 NPU 外层调用</summary><pre>{{ r.npu_comparison_scope.cpu_name }} · CPU #{{ r.npu_comparison_scope.cpu_index }}
+Shape: {{ JSON.stringify(r.npu_comparison_scope.shapes) }}
+Dtype: {{ JSON.stringify(r.npu_comparison_scope.dtypes) }}</pre></details>
             </article>
             <p v-if="!data.candidates.length">没有可用候选。已分配、跨 GPU 设备或含 GPU 内存活动的调用不在本版候选中。</p>
             <div v-if="search && data.candidate_total > data.candidate_limit" class="pagination"><span>共 {{ data.candidate_total }} 组</span><button :disabled="saving || gpuOffset===0" @click="gpuOffset-=20;load()">上一页 GPU</button><button :disabled="saving || gpuOffset+20>=data.candidate_total" @click="gpuOffset+=20;load()">下一页 GPU</button></div>
             <template v-if="candidate">
               <h3>3. 确认关联</h3><p>新增可比 NPU 时间 {{ fmt(target.time_us) }} μs；分配 GPU 时间 {{ fmt(candidate.time_us) }} μs。预计类型覆盖率 {{ coverage }}，所选整组 GPU/NPU 比值 {{ target.time_us ? fmt(candidate.time_us/target.time_us) : '—' }}。TOTAL 不变。</p>
               <label>确认理由<textarea v-model="reason" maxlength="500" placeholder="例如：已核对两侧 index_add_ 调用，NPU 仅多一层内部调用" :disabled="saving" /></label>
+              <label><input v-model="confirmedTemplate" type="checkbox" :disabled="saving"> 按人工确认模板扩展（允许两侧 shape / dtype / 参数数量不同）</label>
+              <p v-if="confirmedTemplate" class="notice">请核实当前一对代表相同工作。仅扩展与所选 NPU、GPU 各自元数据一致的重复调用，要求数量相等、调用顺序一致；结果标记为人工确认。</p>
               <div class="toolbar"><button :disabled="saving || !reason.trim()" @click="submit">{{ saving ? '提交中…' : '仅确认当前组' }}</button><button class="primary" :disabled="saving || preparingBatch" @click="previewBatch">{{ preparingBatch ? '正在生成预览…' : '预览同类批量关联' }}</button></div>
               <section v-if="batchPreview" class="manual-candidate batch-preview" aria-label="批量关联预览">
                 <h3>批量关联预览 · {{ batchPreview.pair_count }} 对调用</h3>
                 <p>以当前选择为模板：同模块、同调用结构的 NPU {{ batchPreview.scope_target_count }} 组，GPU {{ batchPreview.scope_candidate_count }} 组。</p>
                 <p>可关联 NPU {{ batchPreview.npu_kernel_count }} 个 kernel ↔ GPU {{ batchPreview.gpu_kernel_count }} 个 kernel。新增可比 NPU 时间 {{ fmt(batchPreview.npu_time_us) }} μs，分配 GPU 时间 {{ fmt(batchPreview.gpu_time_us) }} μs；预计类型覆盖率 {{ batchCoverage }}。</p>
                 <p class="muted small">每对独立保存，整批只生成一次报告，可整批撤销。TOTAL 不变。</p>
+                <p v-if="batchPreview.comparison.npu_owner_cpu_index !== batchPreview.comparison.npu.cpu_index" class="notice">本次使用 NPU 外层 {{ batchPreview.comparison.npu.cpu_name }}（CPU #{{ batchPreview.comparison.npu.cpu_index }}）与 GPU 调用比较，原始 kernel owner 不变。</p>
                 <p v-if="batchPreview.basis_counts.manual_template_order" class="notice">其中 {{ batchPreview.basis_counts.manual_template_order }} 对依据完整元数据和各端调用顺序扩展，请确认它们属于同一组重复调用。</p>
+                <p v-if="batchPreview.mode==='confirmed_template'" class="notice">{{ batchPreview.pair_count }} 对按人工确认的两侧模板扩展，元数据差异：{{ batchPreview.comparison.different_fields.join('、') || '无' }}。此模式仅包含与当前选中一对各自元数据一致的调用。</p>
+                <details><summary>本次使用的两侧 CPU 元数据</summary><pre>NPU {{ batchPreview.comparison.npu.cpu_name }} · CPU #{{ batchPreview.comparison.npu.cpu_index }}
+Shape: {{ JSON.stringify(batchPreview.comparison.npu.shapes) }}
+Dtype: {{ JSON.stringify(batchPreview.comparison.npu.dtypes) }}
+GPU {{ batchPreview.comparison.gpu.cpu_name }} · CPU #{{ batchPreview.comparison.gpu.cpu_index }}
+Shape: {{ JSON.stringify(batchPreview.comparison.gpu.shapes) }}
+Dtype: {{ JSON.stringify(batchPreview.comparison.gpu.dtypes) }}</pre></details>
                 <p v-if="batchPreview.excluded_count">同模板有 {{ batchPreview.excluded_count }} 组未纳入：<span v-for="(n,why) in batchPreview.excluded_reasons" :key="why">{{ why }}（{{ n }} 组）；</span></p>
                 <p v-if="batchPreview.other_target_count" class="muted small">该类型另有 {{ batchPreview.other_target_count }} 组属于其他模块或调用结构，本次不包含。</p>
-                <details><summary>查看配对样本（{{ batchPreview.pairs.length }} / {{ batchPreview.pair_count }}）</summary><div class="table-scroll"><table><thead><tr><th>NPU CPU # / kernels</th><th>GPU CPU # / kernels</th><th>依据</th></tr></thead><tbody><tr v-for="p in batchPreview.pairs" :key="p.target_id"><td>{{ p.npu_cpu_index }} / {{ p.npu_indices.length }}</td><td>{{ p.gpu_cpu_index }} / {{ p.gpu_indices.length }}</td><td>{{ p.basis==='aligned_cpu_scope' ? '已有 CPU 对齐' : '人工模板 + 调用顺序' }}</td></tr></tbody></table></div></details>
+                <details><summary>查看配对样本（{{ batchPreview.pairs.length }} / {{ batchPreview.pair_count }}）</summary><div class="table-scroll"><table><thead><tr><th>NPU owner CPU # / kernels</th><th>GPU CPU # / kernels</th><th>依据</th></tr></thead><tbody><tr v-for="p in batchPreview.pairs" :key="p.target_id"><td>{{ p.npu_cpu_index }} / {{ p.npu_indices.length }}</td><td>{{ p.gpu_cpu_index }} / {{ p.gpu_indices.length }}</td><td>{{ basisLabel(p.basis) }}</td></tr></tbody></table></div></details>
                 <button class="primary" :disabled="saving || !reason.trim()" @click="submitBatch">{{ saving ? '提交中…' : `一次确认 ${batchPreview.pair_count} 对并更新报告` }}</button>
               </section>
             </template>

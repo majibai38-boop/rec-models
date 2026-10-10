@@ -13,6 +13,7 @@ import secrets
 import shutil
 import time
 import uuid
+from typing import Literal
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -97,7 +98,12 @@ class ManualConfirmation(ManualSeed):
     reason: str = Field(min_length=1, max_length=500)
 
 
-class ManualBatchConfirmation(ManualConfirmation):
+class ManualBatchSeed(ManualSeed):
+    mode: Literal['strict', 'confirmed_template'] = 'strict'
+
+
+class ManualBatchConfirmation(ManualBatchSeed):
+    reason: str = Field(min_length=1, max_length=500)
     preview_token: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
@@ -391,14 +397,14 @@ def create_app(settings=None):
         if job['attempt'] != body.attempt:
             raise Conflict('结果已变化，请刷新后重试')
         try:
-            target, plan = manual_batch_plan(root/'index.sqlite', body.target_id, body.candidate_id)
+            target, plan = manual_batch_plan(root/'index.sqlite', body.target_id, body.candidate_id, body.mode)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         token = hashlib.sha256(json.dumps([job['attempt'], plan], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         return job, target, plan, token
 
     @app.post('/api/jobs/{job_id}/manual-batch/preview')
-    def preview_manual_batch(job_id: str, body: ManualSeed):
+    def preview_manual_batch(job_id: str, body: ManualBatchSeed):
         job, _, plan, token = get_batch(job_id, body)
         return {**plan, 'pairs': plan['pairs'][:20], 'attempt': job['attempt'], 'preview_token': token}
 

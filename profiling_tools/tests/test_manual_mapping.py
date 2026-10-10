@@ -13,7 +13,7 @@ from profiling_tools.tests.test_logical_calls import op, profile
 from profiling_tools.tests.test_scope_recovery import strong
 
 
-def nested_fixture(root, count=1):
+def nested_fixture(root, count=1, outer_extra=False):
     root = Path(root)
     for side, pid in [('gpu',1),('npu',3)]:
         events = [complete('ProfilerStep#1','user_annotation',0,100*count,pid,pid),
@@ -21,9 +21,15 @@ def nested_fixture(root, count=1):
         for i in range(count):
             args = {'External id':2*i+1,'Input Dims':[[4],[],[4],[4],[]],
                     'Input type':['float','Scalar','long','float','Scalar']}
+            if side == 'npu' and outer_extra:
+                args = {**args, 'Input Dims': [*args['Input Dims'], []],
+                        'Input type': [*args['Input type'], 'Scalar']}
             events.append(complete('aten::index_add_','cpu_op',100*i+10,10,pid,pid,args))
             if side == 'npu':
-                events.append(complete('aten::index_add','cpu_op',100*i+12,5,pid,pid,{**args,'External id':2*i+2}))
+                # Real backend wrapper metadata includes an additional argument.
+                events.append(complete('aten::index_add','cpu_op',100*i+12,5,pid,pid,
+                                       {**args, 'External id':2*i+2, 'Input Dims': [*args['Input Dims'], [4]],
+                                        'Input type': [*args['Input type'], 'float']}))
             events.append(complete('index_kernel','kernel',100*i+30,4 if side=='npu' else 2,pid+1,7,
                                   {'External id':2*i+(2 if side=='npu' else 1),'stream':7}))
         (root/f'{side}.json').write_text(json.dumps({'traceEvents':events}),encoding='utf-8')

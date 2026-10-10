@@ -17,7 +17,8 @@ class ManualWebTest(unittest.TestCase):
     complete = base.WebTest.complete
 
     def upload(self, ident):
-        config = nested_fixture(self.root, count=getattr(self, 'call_count', 1))
+        config = nested_fixture(self.root, count=getattr(self, 'call_count', 1),
+                                outer_extra=getattr(self, 'outer_extra', False))
         for role in INPUTS:
             response = self.client.put(f'/api/jobs/{ident}/inputs/{role}',content=Path(getattr(config,role)).read_bytes())
             self.assertEqual(response.status_code,200,response.text)
@@ -104,20 +105,36 @@ class ManualWebTest(unittest.TestCase):
         self.assertEqual(restored['summary'],old['summary'])
 
     def test_260_call_batch_preview_confirm_export_and_undo(self):
+        self.check_batch_lifecycle('strict')
+
+    def test_different_metadata_manual_batch_preview_confirm_export_and_undo(self):
+        self.outer_extra = True
+        self.check_batch_lifecycle('confirmed_template')
+
+    def check_batch_lifecycle(self, mode):
         self.call_count = 260
         ident = self.complete()
         before = self.store.get(ident)
         payload = self.request_link(ident)
         seed = {k: payload[k] for k in ('attempt', 'target_id', 'candidate_id')}
+        if mode == 'confirmed_template':
+            rejected = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=seed)
+            self.assertEqual(rejected.status_code, 422, rejected.text)
+        seed['mode'] = mode
         with patch('profiling_tools.parser._load_trace_events', side_effect=AssertionError('preview must use index')):
             response = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=seed)
         self.assertEqual(response.status_code, 200, response.text)
         preview = response.json()
         self.assertEqual(preview['pair_count'], 260)
-        self.assertEqual(preview['basis_counts'], {'aligned_cpu_scope': 260})
+        basis = 'aligned_cpu_scope' if mode == 'strict' else 'manual_confirmed_template_order'
+        self.assertEqual(preview['basis_counts'], {basis: 260})
+        self.assertNotEqual(preview['comparison']['npu']['cpu_index'], preview['comparison']['npu_owner_cpu_index'])
         self.assertEqual(len(preview['pairs']), 20)
         self.assertEqual(self.store.get(ident)['attempt'], before['attempt'])
-        request = {**payload, 'preview_token': preview['preview_token']}
+        request = {**payload, 'mode': mode, 'preview_token': preview['preview_token']}
+        if mode == 'strict':
+            wrong_mode = self.client.post(f'/api/jobs/{ident}/manual-batch', json={**request, 'mode': 'confirmed_template'})
+            self.assertEqual(wrong_mode.status_code, 409, wrong_mode.text)
         bad = self.client.post(f'/api/jobs/{ident}/manual-batch', json={**request, 'preview_token': '0'*64})
         self.assertEqual(bad.status_code, 409, bad.text)
         response = self.client.post(f'/api/jobs/{ident}/manual-batch', json=request)
@@ -134,6 +151,8 @@ class ManualWebTest(unittest.TestCase):
         self.assertEqual(row['coverage']['comparable']['time_pct'], 100)
         links = self.client.get(f'/api/jobs/{ident}/artifacts/manual_links.json').json()
         self.assertEqual(len(links), 260)
+        self.assertTrue(all(r['basis'] == basis for r in links))
+        self.assertTrue(all(r['npu_scope_cpu_index'] != r['npu_cpu_index'] for r in links))
         self.assertTrue(all(len(r['gpu_indices']) == len(r['npu_indices']) == 1 for r in links))
         self.assertEqual(len({i for r in links for i in r['gpu_indices']}), 260)
         self.assertEqual(len({r['batch_id'] for r in links}), 1)

@@ -114,7 +114,7 @@ def manual_group(path, kind, ident):
         return json.loads(row[0])
 
 
-def manual_batch_plan(path, target_id, candidate_id):
+def manual_batch_plan(path, target_id, candidate_id, mode='strict'):
     from profiling_tools.manual_mapping import batch_plan
     target = manual_group(path, 'targets', target_id)
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
@@ -122,7 +122,7 @@ def manual_batch_plan(path, target_id, candidate_id):
             "SELECT payload FROM manual_groups WHERE kind='targets' AND op_type=? AND device_id=? AND core_type=? ORDER BY id",
             (target['op_type'], target['device_id'], target['core_type']))]
         candidates = [json.loads(r[0]) for r in db.execute("SELECT payload FROM manual_groups WHERE kind='candidates' ORDER BY id")]
-    return target, batch_plan(targets, candidates, target_id, candidate_id)
+    return target, batch_plan(targets, candidates, target_id, candidate_id, mode)
 
 
 def manual_options(path, op_type, device_id, core_type, target_id='', search='', offset=0, gpu_offset=0):

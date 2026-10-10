@@ -18,7 +18,8 @@ def _metadata(profile, index):
     differences, missing = compare_metadata(op, op)
     return {"cpu_index": index, "cpu_name": op.canonical_name, "module": op.module_key,
             "batch_context": {"path": list(reversed(path)), "pid": op.event.pid, "tid": op.event.tid,
-                              "timestamp_us": op.event.timestamp_us, "metadata_complete": not differences and not missing},
+                              "timestamp_us": op.event.timestamp_us, "metadata_complete": not differences and not missing,
+                              "tensor_metadata_complete": not {'input_shapes', 'input_dtypes'}.intersection(differences + missing)},
             "shapes": shapes(op.raw_input_shapes or op.input_shapes),
             "dtypes": dtypes(op.raw_input_dtypes or op.input_dtypes)}
 
@@ -39,22 +40,28 @@ def catalog(gpu, npu, matches, rows):
     candidate_ops = {k.owner_op_index for k in gpu.kernels if k.owner_op_index is not None}
     for key, indices in groups.items():
         owner = npu.kernels[indices[0]].owner_op_index
-        aligned = []
+        aligned, cpu_aligned, comparison_scopes = [], [], []
         ancestor = owner
         while ancestor is not None:
+            complete_scope = len(ns[ancestor]) == len(indices) and set(ns[ancestor]) == set(indices)
+            if complete_scope:
+                comparison_scopes.append(_metadata(npu, ancestor))
             match = by_npu.get(ancestor)
             if match:
                 candidate_ops.add(match.gpu_op_index)
                 differences, missing = compare_metadata(npu.ops[ancestor], gpu.ops[match.gpu_op_index])
                 # Strongest suggestion covers this exact NPU group, not sibling types/calls.
-                if set(ns[ancestor]) == set(indices) and not differences and not missing:
-                    aligned.append(f'op:{match.gpu_op_index}')
+                if complete_scope:
+                    cpu_aligned.append(f'op:{match.gpu_op_index}')
+                    if not differences and not missing:
+                        aligned.append(f'op:{match.gpu_op_index}')
             ancestor = npu.ops[ancestor].parent_index
         targets.append({'id': f'npu:{indices[0]}', 'op_type': key[1], 'device_id': key[0], 'core_type': key[2],
                         'indices': indices, 'count': len(indices),
                         'time_us': sum(npu.kernels[i].event.duration_us for i in indices),
                         'names': sorted({npu.kernels[i].event.name for i in indices}),
                         'aligned': aligned,
+                        'cpu_aligned': cpu_aligned, 'comparison_scopes': comparison_scopes,
                         'weak_owner': any(npu.kernels[i].link_method not in {'external_id','runtime_correlation','torch_to_npu','host_to_device_queue','host_to_device_thread'} for i in indices),
                         **_metadata(npu, owner)})
     candidates = []
@@ -74,7 +81,15 @@ def catalog(gpu, npu, matches, rows):
     return {'targets': targets, 'candidates': candidates}
 
 
+def _comparison_target(target, candidate):
+    """Use the nearest same-name complete call; keep the real owner in the catalog."""
+    scope = next((s for s in target.get('comparison_scopes', [])
+                  if s['cpu_name'] == candidate['cpu_name']), None)
+    return {**target, **scope} if scope else target
+
+
 def rank_candidate(target, candidate):
+    comparison = _comparison_target(target, candidate)
     reasons, warnings = [], []
     score = 0
     if candidate['id'] in target['aligned']:
@@ -82,29 +97,38 @@ def rank_candidate(target, candidate):
         reasons.append('已对齐的 CPU 调用范围；完整输入元数据一致')
     else:
         for key, label, weight in [('module', '模块', 25), ('shapes', '输入 shape', 25), ('dtypes', '输入 dtype', 15)]:
-            if not target[key] or not candidate[key]:
+            if not comparison[key] or not candidate[key]:
                 warnings.append(label + '缺失')
-            elif target[key] == candidate[key]:
+            elif comparison[key] == candidate[key]:
                 score += weight
                 reasons.append(label + '一致')
             else:
                 warnings.append(label + '不同')
-        if target['cpu_name'] == candidate['cpu_name'] and target['cpu_index'] is not None:
+        if comparison['cpu_name'] == candidate['cpu_name'] and comparison['cpu_index'] is not None:
             score += 20
             reasons.append('CPU op 名称一致')
+    if comparison['cpu_index'] != target['cpu_index']:
+        reasons.append(f"按完整外层 {comparison['cpu_name']} 调用比较，内层 owner 保留")
     if not reasons:
         reasons.append('仅供人工检索，未发现可靠对应证据')
     if target.get('weak_owner') or candidate.get('weak_owner'):
         warnings.append('kernel owner 关联证据不足')
         score = min(score,60)
     return {**candidate, 'rank_score': score,
+            'npu_comparison_scope': {k: comparison[k] for k in ('cpu_index', 'cpu_name', 'module', 'shapes', 'dtypes')},
             'recommendation': '优先推荐' if score == 100 else '候选，需核实' if score >= 40 else '证据不足',
             'reasons': reasons, 'warnings': warnings}
 
 
-def batch_plan(targets, candidates, target_id, candidate_id):
+def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
     """Expand a human-selected seed into independent call pairs, never a mega-bundle."""
-    ts, cs = {r['id']: r for r in targets}, {r['id']: r for r in candidates}
+    if mode not in {'strict', 'confirmed_template'}:
+        raise ValueError('未知批量关联模式')
+    originals = {r['id']: r for r in targets}
+    cs = {r['id']: r for r in candidates}
+    if candidate_id in cs:
+        targets = [_comparison_target(t, cs[candidate_id]) for t in targets]
+    ts = {r['id']: r for r in targets}
     if target_id not in ts or candidate_id not in cs:
         raise ValueError('候选已不可用，请刷新后重试')
     seed_t, seed_c = ts[target_id], cs[candidate_id]
@@ -122,9 +146,15 @@ def batch_plan(targets, candidates, target_id, candidate_id):
     scoped_t = [r for r in targets if family(r) == family(seed_t)]
     scoped_c = [r for r in candidates if family(r, True) == family(seed_c, True)]
     reasons, pairs = {}, {}
-    eligible_t = [r for r in scoped_t if not r.get('weak_owner') and r['batch_context']['metadata_complete']]
+    def eligible(r):
+        context = r['batch_context']
+        complete = context['metadata_complete'] if mode == 'strict' else context.get(
+            'tensor_metadata_complete', context['metadata_complete'])
+        return not r.get('weak_owner') and complete
+
+    eligible_t = [r for r in scoped_t if eligible(r)]
     eligible_ids = {r['id'] for r in eligible_t}
-    eligible_c = {r['id']: r for r in scoped_c if not r.get('weak_owner') and r['batch_context']['metadata_complete']}
+    eligible_c = {r['id']: r for r in scoped_c if eligible(r)}
     for t in scoped_t:
         if t['id'] not in eligible_ids:
             reasons[t['id']] = 'owner 或输入元数据证据不足'
@@ -145,9 +175,9 @@ def batch_plan(targets, candidates, target_id, candidate_id):
         return (r['batch_context']['timestamp_us'], r['cpu_index'])
 
     nparts, gparts = defaultdict(list), defaultdict(list)
-    for r in eligible_t:
+    for r in scoped_t:
         nparts[signature(r)].append(r)
-    for r in eligible_c.values():
+    for r in scoped_c:
         gparts[signature(r)].append(r)
     # A manual template can extend missing alignments only with equal complete
     # populations and order consistent with every existing alignment and the seed.
@@ -157,6 +187,8 @@ def batch_plan(targets, candidates, target_id, candidate_id):
             for t in nt:
                 if not t['aligned']:
                     reasons[t['id']] = '同元数据调用数量不一致，不能按顺序批量配对'
+            continue
+        if not all(eligible(r) for r in [*nt, *gt]):
             continue
         ordered = list(zip(sorted(nt, key=order), sorted(gt, key=order)))
         consistent = all((not t['aligned'] or g['id'] in t['aligned']) and
@@ -169,6 +201,24 @@ def batch_plan(targets, candidates, target_id, candidate_id):
         for t, g in ordered:
             if not t['aligned']:
                 pairs[t['id']] = (t, g, 'manual_template_order')
+
+    if mode == 'confirmed_template':
+        # The user confirms a relation between TWO signatures, not equality.
+        # Extend only those exact per-side signatures, with equal populations,
+        # the seed at the same ordinal and no conflict with CPU alignments.
+        nt, gt = nparts[signature(seed_t)], gparts[signature(seed_c)]
+        if len(nt) != len(gt):
+            raise ValueError(f'人工模板数量不一致：NPU {len(nt)} 组、GPU {len(gt)} 组；不能按顺序批量关联')
+        if not all(eligible(r) for r in [*nt, *gt]):
+            raise ValueError('人工模板包含弱 owner 或缺失 shape/dtype 的调用，请先核实调用证据')
+        ordered = list(zip(sorted(nt, key=order), sorted(gt, key=order)))
+        if any((t.get('cpu_aligned', t['aligned']) and g['id'] not in t.get('cpu_aligned', t['aligned'])) or
+               (t['id'] == target_id and g['id'] != candidate_id) for t, g in ordered):
+            raise ValueError('人工模板调用顺序与所选配对或已有 CPU 对齐冲突，请选择相同调用位置的候选')
+        pairs = {t['id']: (t, g, 'manual_confirmed_template_order') for t, g in ordered}
+        for t in scoped_t:
+            if t['id'] not in pairs:
+                reasons[t['id']] = '与当前所选 NPU 元数据模板不同'
     # Remove all conflicting scopes rather than arbitrarily keeping the first.
     gpu_use = Counter(i for _, g, _ in pairs.values() for i in g['indices'])
     for ident, (_, g, _) in list(pairs.items()):
@@ -176,18 +226,33 @@ def batch_plan(targets, candidates, target_id, candidate_id):
             reasons[ident] = 'GPU 调用范围重叠，不能重复分配'
             del pairs[ident]
     if target_id not in pairs or pairs[target_id][1]['id'] != candidate_id:
-        raise ValueError('所选这一对不能安全扩展为批量模板；请核对推荐候选、完整元数据和调用顺序，或使用单组关联')
+        detail = reasons.get(target_id, '所选 GPU 候选与已有 CPU 对齐不一致')
+        hint = ''
+        if mode == 'strict' and signature(seed_t) != signature(seed_c):
+            fields = [label for k, label in [('module', '模块'), ('shapes', 'shape'), ('dtypes', 'dtype')]
+                      if seed_t[k] != seed_c[k]]
+            detail += '；两侧 CPU ' + ' / '.join(fields) + ' 不同'
+            hint = '若已核实差异，可勾选“按人工确认模板扩展”后重新预览。'
+        if 'comparison_scopes' not in originals[target_id]:
+            hint += '旧报告的外层调用信息需复用输入重新分析生成。'
+        raise ValueError(f'所选这一对不能扩展为批量模板：{detail}。{hint}')
     selected = sorted(pairs.values(), key=lambda pair: order(pair[0]))
     if len(selected) > 5000:
         raise ValueError('本次模板超过 5000 对，请缩小调用范围后重新分析')
     result_pairs = [{'target_id': t['id'], 'candidate_id': g['id'], 'basis': basis,
                      'npu_indices': t['indices'], 'gpu_indices': g['indices'],
-                     'npu_cpu_index': t['cpu_index'], 'gpu_cpu_index': g['cpu_index'],
+                     'npu_cpu_index': originals[t['id']]['cpu_index'], 'gpu_cpu_index': g['cpu_index'],
+                     'npu_scope_cpu_index': t['cpu_index'], 'npu_scope_cpu_name': t['cpu_name'],
                      'npu_time_us': t['time_us'], 'gpu_time_us': g['time_us']}
                     for t, g, basis in selected]
     excluded = [{'target_id': t['id'], 'cpu_index': t['cpu_index'], 'reason': reasons.get(t['id'], '不符合批量条件')}
                 for t in scoped_t if t['id'] not in pairs]
-    return {'pairs': result_pairs, 'scope_target_count': len(scoped_t), 'scope_candidate_count': len(scoped_c),
+    fields = ('cpu_index', 'cpu_name', 'module', 'shapes', 'dtypes')
+    return {'pairs': result_pairs, 'mode': mode,
+            'comparison': {'npu': {k: seed_t[k] for k in fields}, 'gpu': {k: seed_c[k] for k in fields},
+                           'npu_owner_cpu_index': originals[target_id]['cpu_index'],
+                           'different_fields': [k for k in fields if k != 'cpu_index' and seed_t[k] != seed_c[k]]},
+            'scope_target_count': len(scoped_t), 'scope_candidate_count': len(scoped_c),
             'other_target_count': len(targets) - len(scoped_t), 'excluded_count': len(excluded),
             'excluded': excluded[:20], 'excluded_reasons': dict(Counter(r['reason'] for r in excluded)),
             'pair_count': len(selected), 'basis_counts': dict(Counter(p['basis'] for p in result_pairs)),
