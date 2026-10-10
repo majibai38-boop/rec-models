@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from profiling_tools.manual_mapping import batch_plan, catalog, link_history
+from profiling_tools.manual_mapping import BatchConflict, batch_plan, catalog, link_history
 from profiling_tools.model import OpMatch
 from profiling_tools.tests.test_logical_calls import op, profile
 from profiling_tools.tests.test_comparison_accounting import mapping
@@ -98,7 +98,8 @@ class ManualBatchTest(unittest.TestCase):
                 before = copy.deepcopy(c)
                 plan = batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_template')
                 self.assertEqual(plan['pair_count'], 260)
-                self.assertEqual(plan['basis_counts'], {'manual_confirmed_template_order': 260})
+                basis = 'manual_confirmed_template_order' if legacy else 'manual_confirmed_cpu_scope'
+                self.assertEqual(plan['basis_counts'], {basis: 260})
                 self.assertIn('shapes', plan['comparison']['different_fields'])
                 self.assertEqual(len({i for p in plan['pairs'] for i in p['gpu_indices']}), 260)
                 self.assertEqual(c, before)
@@ -110,6 +111,45 @@ class ManualBatchTest(unittest.TestCase):
         plan = batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_template')
         self.assertEqual(plan['pair_count'], 4)
         self.assertNotIn('npu:2', [p['target_id'] for p in plan['pairs']])
+
+    def test_wrong_seed_reports_positions_and_correct_candidate_for_260_calls(self):
+        c = repeated_catalog(260, outer_shape='[[4],[],[4]]', aligned=False)
+        with self.assertRaises(BatchConflict) as caught:
+            batch_plan(c['targets'], c['candidates'], 'npu:179', 'op:0', 'confirmed_template')
+        detail = caught.exception.detail
+        self.assertEqual(detail['code'], 'seed_pair_mismatch')
+        self.assertEqual(detail['position']['npu'], 180)
+        self.assertEqual(detail['position']['gpu'], 1)
+        self.assertEqual(detail['suggested_candidate']['id'], 'op:179')
+        plan = batch_plan(c['targets'], c['candidates'], 'npu:179',
+                          detail['suggested_candidate']['id'], 'confirmed_template')
+        self.assertEqual(plan['pair_count'], 260)
+        self.assertEqual(plan['selection_position']['paired_gpu'], 180)
+        self.assertTrue(all(p['npu_indices'] == p['gpu_indices'] for p in plan['pairs']))
+
+    def test_complete_cpu_correspondence_wins_over_different_call_order(self):
+        c = repeated_catalog(5, outer_shape='[[4],[],[4]]')
+        c['targets'][0]['cpu_aligned'] = ['op:1']
+        c['targets'][1]['cpu_aligned'] = ['op:0']
+        plan = batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:1', 'confirmed_template')
+        self.assertEqual(plan['pair_count'], 5)
+        self.assertEqual(plan['basis_counts'], {'manual_confirmed_cpu_scope': 5})
+        self.assertEqual([p['gpu_indices'] for p in plan['pairs']], [[1], [0], [2], [3], [4]])
+        self.assertEqual(plan['selection_position']['gpu'], 2)
+        with self.assertRaises(BatchConflict) as caught:
+            batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_template')
+        self.assertEqual(caught.exception.detail['suggested_candidate']['id'], 'op:1')
+
+    def test_partial_conflicting_cpu_alignment_is_reported_not_overridden(self):
+        c = repeated_catalog(5, outer_shape='[[4],[],[4]]', aligned=False)
+        c['targets'][3]['cpu_aligned'] = ['op:4']
+        with self.assertRaises(BatchConflict) as caught:
+            batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_template')
+        detail = caught.exception.detail
+        self.assertEqual(detail['code'], 'cpu_alignment_conflict')
+        self.assertEqual(detail['conflict_count'], 1)
+        self.assertEqual(detail['conflicts'][0]['npu_position'], 4)
+        self.assertNotIn('suggested_candidate', detail)
 
     def test_confirmed_template_rejects_counts_order_missing_and_alignment_conflicts(self):
         for case in ('counts', 'seed_order', 'aligned_conflict', 'weak', 'metadata', 'overlap'):

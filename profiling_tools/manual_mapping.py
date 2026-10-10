@@ -7,6 +7,13 @@ from .device_compare import scoped_indices
 from .model import bundle_metrics
 
 
+class BatchConflict(ValueError):
+    """A preview conflict with enough context to select a valid seed."""
+    def __init__(self, code, message, **details):
+        super().__init__(message)
+        self.detail = {'code': code, 'message': message, **details}
+
+
 def _metadata(profile, index):
     if index is None:
         return {"cpu_index": None, "cpu_name": "未知 owner", "module": "", "shapes": [], "dtypes": []}
@@ -120,6 +127,47 @@ def rank_candidate(target, candidate):
             'reasons': reasons, 'warnings': warnings}
 
 
+def _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order):
+    """Prefer a complete CPU bijection; otherwise validate chronological pairs."""
+    nt, gt = sorted(nt, key=order), sorted(gt, key=order)
+    positions_n = {t['id']: i + 1 for i, t in enumerate(nt)}
+    positions_g = {g['id']: i + 1 for i, g in enumerate(gt)}
+    by_gpu = {g['id']: g for g in gt}
+    anchors = {t['id']: list(dict.fromkeys(t.get('cpu_aligned', t['aligned']))) for t in nt}
+    complete = (all(len(anchors[t['id']]) == 1 and anchors[t['id']][0] in by_gpu for t in nt)
+                and len({anchors[t['id']][0] for t in nt}) == len(nt))
+    if complete:
+        ordered = [(t, by_gpu[anchors[t['id']][0]]) for t in nt]
+        basis = 'manual_confirmed_cpu_scope'
+    else:
+        ordered = list(zip(nt, gt))
+        conflicts = [{'npu_cpu_index': originals[t['id']]['cpu_index'],
+                      'npu_scope_cpu_index': t['cpu_index'], 'npu_position': positions_n[t['id']],
+                      'ordered_gpu_cpu_index': g['cpu_index'], 'aligned_candidate_ids': anchors[t['id']]}
+                     for t, g in ordered if anchors[t['id']] and g['id'] not in anchors[t['id']]]
+        if conflicts:
+            first = conflicts[0]
+            raise BatchConflict('cpu_alignment_conflict',
+                f"已有 CPU 对齐与顺序配对存在 {len(conflicts)} 处冲突：第 {first['npu_position']} 对，"
+                f"NPU CPU #{first['npu_cpu_index']} 按顺序对应 GPU CPU #{first['ordered_gpu_cpu_index']}，"
+                f"已有 CPU 候选为 {', '.join(first['aligned_candidate_ids'][:5])}。"
+                '当前模板未形成完整唯一的 CPU 对应，不能直接按顺序扩展；请核对调用范围或缩小模板。',
+                conflict_count=len(conflicts), conflicts=conflicts[:20])
+        basis = 'manual_confirmed_template_order'
+    partner = next(g for t, g in ordered if t['id'] == seed_t['id'])
+    position = {'npu': positions_n[seed_t['id']], 'gpu': positions_g[seed_c['id']],
+                'total': len(nt), 'paired_gpu': positions_g[partner['id']],
+                'basis': basis}
+    if partner['id'] != seed_c['id']:
+        method = '已有 CPU 对齐' if complete else '同类调用顺序'
+        raise BatchConflict('seed_pair_mismatch',
+            f"当前选中 NPU 同模板第 {position['npu']}/{len(nt)} 次、GPU 第 {position['gpu']}/{len(gt)} 次。"
+            f"按{method}，该 NPU 调用应对应 GPU 第 {position['paired_gpu']} 次（CPU #{partner['cpu_index']}）。"
+            '可改选该候选并重新预览整批，无需逐个关联。',
+            position=position, suggested_candidate=rank_candidate(originals[seed_t['id']], partner))
+    return {t['id']: (t, g, basis) for t, g in ordered}, position
+
+
 def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
     """Expand a human-selected seed into independent call pairs, never a mega-bundle."""
     if mode not in {'strict', 'confirmed_template'}:
@@ -202,20 +250,17 @@ def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
             if not t['aligned']:
                 pairs[t['id']] = (t, g, 'manual_template_order')
 
+    selection_position = None
     if mode == 'confirmed_template':
         # The user confirms a relation between TWO signatures, not equality.
         # Extend only those exact per-side signatures, with equal populations,
-        # the seed at the same ordinal and no conflict with CPU alignments.
+        # the seed consistent with a CPU bijection or chronological pairing.
         nt, gt = nparts[signature(seed_t)], gparts[signature(seed_c)]
         if len(nt) != len(gt):
             raise ValueError(f'人工模板数量不一致：NPU {len(nt)} 组、GPU {len(gt)} 组；不能按顺序批量关联')
         if not all(eligible(r) for r in [*nt, *gt]):
             raise ValueError('人工模板包含弱 owner 或缺失 shape/dtype 的调用，请先核实调用证据')
-        ordered = list(zip(sorted(nt, key=order), sorted(gt, key=order)))
-        if any((t.get('cpu_aligned', t['aligned']) and g['id'] not in t.get('cpu_aligned', t['aligned'])) or
-               (t['id'] == target_id and g['id'] != candidate_id) for t, g in ordered):
-            raise ValueError('人工模板调用顺序与所选配对或已有 CPU 对齐冲突，请选择相同调用位置的候选')
-        pairs = {t['id']: (t, g, 'manual_confirmed_template_order') for t, g in ordered}
+        pairs, selection_position = _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order)
         for t in scoped_t:
             if t['id'] not in pairs:
                 reasons[t['id']] = '与当前所选 NPU 元数据模板不同'
@@ -248,7 +293,7 @@ def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
     excluded = [{'target_id': t['id'], 'cpu_index': t['cpu_index'], 'reason': reasons.get(t['id'], '不符合批量条件')}
                 for t in scoped_t if t['id'] not in pairs]
     fields = ('cpu_index', 'cpu_name', 'module', 'shapes', 'dtypes')
-    return {'pairs': result_pairs, 'mode': mode,
+    return {'pairs': result_pairs, 'mode': mode, 'selection_position': selection_position,
             'comparison': {'npu': {k: seed_t[k] for k in fields}, 'gpu': {k: seed_c[k] for k in fields},
                            'npu_owner_cpu_index': originals[target_id]['cpu_index'],
                            'different_fields': [k for k in fields if k != 'cpu_index' and seed_t[k] != seed_c[k]]},

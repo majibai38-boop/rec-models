@@ -67,7 +67,9 @@ GPU 类 Cube/Vector 仅参考已对齐的 NPU 分类，包括人工确认关联�
 
 NPU 通过内层实现下发 kernel 时，优先使用与所选 GPU CPU op 同名、且恰好覆盖当前 NPU kernel 组的最近外层调用。例如 NPU `aten::index_add_ → aten::index_add → IndexAdd` 对 GPU `aten::index_add_ → kernel`，使用两侧 `index_add_` 的元数据；内层多参数或缺失元数据不会误阻止批量扩展。含其他类型或兄弟调用 kernel 的祖先不用于这种替换。候选与预览中展示比较使用的 CPU scope，真实 kernel owner 保留。
 
-若两侧比较 scope 的参数数量、shape 或 dtype 仍不相同，人工核实这一对等价后，可勾选「按人工确认模板扩展」重新预览。此模式分别使用所选 NPU 和 GPU 各自的完整 shape/dtype 作为模板，只纳入各侧同模板的重复调用；允许两端模板不同，但仍要求调用数量相等、所选配对在两侧顺序中位置相同、且不与已有 CPU 对齐冲突。弱 owner、缺失 shape/dtype 或重复使用 GPU 事件不会被强行放行。结果标记 `manual_confirmed_template_order`，区别于自动对齐证据，可整批撤销。其他 shape 的调用需要另选模板预览，不能只按 kernel 类型全量绑定。
+若两侧比较 scope 的参数数量、shape 或 dtype 仍不相同，人工核实这一对等价后，可勾选「按人工确认模板扩展」重新预览。此模式分别使用所选 NPU 和 GPU 各自的完整 shape/dtype 作为模板，只纳入各侧同模板的重复调用，要求调用数量相等。模板内已有完整、唯一的一一 CPU 对应时，优先采用它，允许两端实际调用顺序不同，结果标记 `manual_confirmed_cpu_scope`；其余场景按各端时间顺序配对，要求与已有 CPU 对齐一致，标记 `manual_confirmed_template_order`。两种依据均属于人工确认，可整批撤销。弱 owner、缺失 shape/dtype 或重复使用 GPU 事件不会被强行放行。其他 shape 的调用需要另选模板预览，不能只按 kernel 类型全量绑定。
+
+NPU 列表默认按耗时排序，GPU 推荐列表按证据排序，因此各自列表第一项不一定对应同一次调用。如果选中了 NPU 第 180 次、GPU 第 1 次，预览会展示同模板内的实际序号，并提供「改选对应 GPU 调用并重新预览」按钮，自动定位该 NPU 对应的 GPU 候选（即使不在当前候选页），再生成整批预览。此按钮只改选和预览，不提交关联；仍需填写理由并点击一次确认。若冲突来自其他调用的 CPU 对齐，则展示冲突编号和已有候选，不将其误报为当前选择位置错误。
 
 更新引擎后，请重启 API / Worker、刷新网页，并对旧任务「复用输入，新建分析」；这样才能取得新增的外层调用信息并通过引擎版本校验。
 

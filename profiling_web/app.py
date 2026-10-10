@@ -393,11 +393,14 @@ def create_app(settings=None):
             raise HTTPException(422, '单任务最多支持 100 次人工确认、合计 10000 对关联')
 
     def get_batch(job_id, body):
+        from profiling_tools.manual_mapping import BatchConflict
         job, root = result_paths(job_id)
         if job['attempt'] != body.attempt:
             raise Conflict('结果已变化，请刷新后重试')
         try:
             target, plan = manual_batch_plan(root/'index.sqlite', body.target_id, body.candidate_id, body.mode)
+        except BatchConflict as exc:
+            raise HTTPException(422, exc.detail) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         token = hashlib.sha256(json.dumps([job['attempt'], plan], ensure_ascii=False, sort_keys=True).encode()).hexdigest()

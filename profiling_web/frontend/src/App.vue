@@ -95,7 +95,12 @@ const filesize = v => `${fmt(v / 1024 ** 2, 1)} MB`
 async function api(path, method = 'GET', body) {
   const response = await fetch('/api' + path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
   if (response.status === 401) logged.value = false
-  if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail || response.statusText)) }
+  if (!response.ok) {
+    const e = await response.json().catch(() => ({}))
+    const failure = new Error(typeof e.detail === 'string' ? e.detail : e.detail?.message || JSON.stringify(e.detail || response.statusText))
+    failure.detail = e.detail
+    throw failure
+  }
   return response.json()
 }
 async function action(fn) { error.value = ''; busy.value = true; try { await fn() } catch (e) { error.value = e.message } finally { busy.value = false } }

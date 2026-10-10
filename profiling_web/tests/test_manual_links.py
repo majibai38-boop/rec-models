@@ -121,6 +121,19 @@ class ManualWebTest(unittest.TestCase):
             rejected = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=seed)
             self.assertEqual(rejected.status_code, 422, rejected.text)
         seed['mode'] = mode
+        if mode == 'confirmed_template':
+            mismatched = {**seed, 'target_id': 'npu:179', 'candidate_id': 'op:0'}
+            with patch('profiling_tools.parser._load_trace_events', side_effect=AssertionError('preview must use index')):
+                response = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=mismatched)
+            self.assertEqual(response.status_code, 422, response.text)
+            detail = response.json()['detail']
+            self.assertEqual(detail['code'], 'seed_pair_mismatch')
+            self.assertEqual(detail['position']['npu'], 180)
+            self.assertEqual(detail['position']['gpu'], 1)
+            self.assertEqual(detail['suggested_candidate']['id'], 'op:179')
+            self.assertEqual(self.store.get(ident)['attempt'], before['attempt'])
+            seed = {**mismatched, 'candidate_id': detail['suggested_candidate']['id']}
+            payload.update(target_id=seed['target_id'], candidate_id=seed['candidate_id'])
         with patch('profiling_tools.parser._load_trace_events', side_effect=AssertionError('preview must use index')):
             response = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=seed)
         self.assertEqual(response.status_code, 200, response.text)
@@ -128,6 +141,9 @@ class ManualWebTest(unittest.TestCase):
         self.assertEqual(preview['pair_count'], 260)
         basis = 'aligned_cpu_scope' if mode == 'strict' else 'manual_confirmed_template_order'
         self.assertEqual(preview['basis_counts'], {basis: 260})
+        if mode == 'confirmed_template':
+            self.assertEqual(preview['selection_position']['npu'], 180)
+            self.assertEqual(preview['selection_position']['gpu'], 180)
         self.assertNotEqual(preview['comparison']['npu']['cpu_index'], preview['comparison']['npu_owner_cpu_index'])
         self.assertEqual(len(preview['pairs']), 20)
         self.assertEqual(self.store.get(ident)['attempt'], before['attempt'])

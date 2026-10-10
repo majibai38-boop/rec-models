@@ -1,14 +1,15 @@
 <script setup>
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 const props = defineProps({ job: Object, type: Object, api: Function })
 const emit = defineEmits(['close', 'submitted', 'upgrade'])
 const data = ref(null), selected = ref(''), targetId = ref(''), search = ref(''), reason = ref('')
 const loading = ref(false), saving = ref(false), error = ref(''), offset = ref(0), gpuOffset = ref(0), dialog = ref(null)
 const pendingUndo = ref('')
 const batchPreview = ref(null), preparingBatch = ref(false)
+const batchIssue = ref(null)
 const confirmedTemplate = ref(false)
 const batchMode = computed(() => confirmedTemplate.value ? 'confirmed_template' : 'strict')
-const basisLabel = (basis) => ({aligned_cpu_scope:'已有 CPU 对齐', manual_template_order:'相同元数据 + 调用顺序', manual_confirmed_template_order:'人工确认两侧模板 + 调用顺序'}[basis] || basis)
+const basisLabel = (basis) => ({aligned_cpu_scope:'已有 CPU 对齐', manual_template_order:'相同元数据 + 调用顺序', manual_confirmed_template_order:'人工确认两侧模板 + 调用顺序', manual_confirmed_cpu_scope:'人工确认两侧模板 + 已有 CPU 对齐'}[basis] || basis)
 let batchSequence = 0
 let sequence = 0, previousFocus
 const fmt = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 3 })
@@ -17,8 +18,8 @@ const target = computed(() => data.value?.target)
 const batchCoverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (batchPreview.value?.npu_time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
-watch(selected, () => {confirmedTemplate.value=false; batchSequence++; batchPreview.value=null; preparingBatch.value=false})
-watch(confirmedTemplate, () => {batchSequence++; batchPreview.value=null; preparingBatch.value=false; error.value=''})
+watch(selected, () => {confirmedTemplate.value=false; batchSequence++; batchPreview.value=null; batchIssue.value=null; preparingBatch.value=false; error.value=''})
+watch(confirmedTemplate, () => {batchSequence++; batchPreview.value=null; batchIssue.value=null; preparingBatch.value=false; error.value=''})
 const coverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (target.value?.time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
@@ -48,13 +49,23 @@ async function submit() {
 async function previewBatch() {
   if (!candidate.value || loading.value || saving.value) return
   const seq = ++batchSequence
-  preparingBatch.value=true; batchPreview.value=null; error.value=''
+  preparingBatch.value=true; batchPreview.value=null; batchIssue.value=null; error.value=''
   try {
     const result = await props.api(`/jobs/${props.job.id}/manual-batch/preview`, 'POST', {
       attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, mode:batchMode.value})
     if (seq === batchSequence) batchPreview.value=result
-  } catch(e) {if (seq === batchSequence) error.value=e.message}
+  } catch(e) {if (seq === batchSequence) {error.value=e.message; batchIssue.value=e.detail || null}}
   finally {if (seq === batchSequence) preparingBatch.value=false}
+}
+async function useSuggestedCandidate() {
+  const replacement = batchIssue.value?.suggested_candidate
+  if (!replacement || saving.value || loading.value || preparingBatch.value) return
+  if (!data.value.candidates.some(r => r.id === replacement.id)) data.value.candidates.unshift(replacement)
+  selected.value = replacement.id
+  await nextTick()
+  confirmedTemplate.value = true
+  await nextTick()
+  await previewBatch()
 }
 async function submitBatch() {
   if (!batchPreview.value || !reason.value.trim() || saving.value || loading.value) return
@@ -125,13 +136,19 @@ Dtype: {{ JSON.stringify(r.npu_comparison_scope.dtypes) }}</pre></details>
               <h3>3. 确认关联</h3><p>新增可比 NPU 时间 {{ fmt(target.time_us) }} μs；分配 GPU 时间 {{ fmt(candidate.time_us) }} μs。预计类型覆盖率 {{ coverage }}，所选整组 GPU/NPU 比值 {{ target.time_us ? fmt(candidate.time_us/target.time_us) : '—' }}。TOTAL 不变。</p>
               <label>确认理由<textarea v-model="reason" maxlength="500" placeholder="例如：已核对两侧 index_add_ 调用，NPU 仅多一层内部调用" :disabled="saving" /></label>
               <label><input v-model="confirmedTemplate" type="checkbox" :disabled="saving"> 按人工确认模板扩展（允许两侧 shape / dtype / 参数数量不同）</label>
-              <p v-if="confirmedTemplate" class="notice">请核实当前一对代表相同工作。仅扩展与所选 NPU、GPU 各自元数据一致的重复调用，要求数量相等、调用顺序一致；结果标记为人工确认。</p>
+              <p v-if="confirmedTemplate" class="notice">请核实当前一对代表相同工作。仅扩展与所选 NPU、GPU 各自元数据一致的重复调用；优先使用完整唯一的 CPU 对应，其余按调用顺序配对。选择位置不符时会提供对应候选。</p>
               <div class="toolbar"><button :disabled="saving || !reason.trim()" @click="submit">{{ saving ? '提交中…' : '仅确认当前组' }}</button><button class="primary" :disabled="saving || preparingBatch" @click="previewBatch">{{ preparingBatch ? '正在生成预览…' : '预览同类批量关联' }}</button></div>
+              <section v-if="batchIssue?.suggested_candidate" class="manual-candidate" aria-label="批量候选修正">
+                <p>当前 NPU 是同模板第 {{ batchIssue.position.npu }} / {{ batchIssue.position.total }} 次；所选 GPU 是第 {{ batchIssue.position.gpu }} 次。建议改选第 {{ batchIssue.position.paired_gpu }} 次：{{ batchIssue.suggested_candidate.cpu_name }} · CPU #{{ batchIssue.suggested_candidate.cpu_index }} · {{ batchIssue.suggested_candidate.count }} kernels。</p>
+                <button class="primary" :disabled="saving || preparingBatch" @click="useSuggestedCandidate">改选对应 GPU 调用并重新预览</button>
+              </section>
+              <details v-if="batchIssue?.conflicts?.length"><summary>查看 CPU 对齐冲突（{{ batchIssue.conflicts.length }} / {{ batchIssue.conflict_count }}）</summary><p v-for="r in batchIssue.conflicts" :key="r.npu_cpu_index">第 {{ r.npu_position }} 对：NPU CPU #{{ r.npu_cpu_index }}，顺序候选 GPU CPU #{{ r.ordered_gpu_cpu_index }}；已有 CPU 候选 {{ r.aligned_candidate_ids.join('、') }}。</p></details>
               <section v-if="batchPreview" class="manual-candidate batch-preview" aria-label="批量关联预览">
                 <h3>批量关联预览 · {{ batchPreview.pair_count }} 对调用</h3>
                 <p>以当前选择为模板：同模块、同调用结构的 NPU {{ batchPreview.scope_target_count }} 组，GPU {{ batchPreview.scope_candidate_count }} 组。</p>
                 <p>可关联 NPU {{ batchPreview.npu_kernel_count }} 个 kernel ↔ GPU {{ batchPreview.gpu_kernel_count }} 个 kernel。新增可比 NPU 时间 {{ fmt(batchPreview.npu_time_us) }} μs，分配 GPU 时间 {{ fmt(batchPreview.gpu_time_us) }} μs；预计类型覆盖率 {{ batchCoverage }}。</p>
                 <p class="muted small">每对独立保存，整批只生成一次报告，可整批撤销。TOTAL 不变。</p>
+                <p v-if="batchPreview.selection_position" class="muted small">当前选中 NPU 第 {{ batchPreview.selection_position.npu }} / {{ batchPreview.selection_position.total }} 次 ↔ GPU 第 {{ batchPreview.selection_position.gpu }} 次；{{ basisLabel(batchPreview.selection_position.basis) }}。</p>
                 <p v-if="batchPreview.comparison.npu_owner_cpu_index !== batchPreview.comparison.npu.cpu_index" class="notice">本次使用 NPU 外层 {{ batchPreview.comparison.npu.cpu_name }}（CPU #{{ batchPreview.comparison.npu.cpu_index }}）与 GPU 调用比较，原始 kernel owner 不变。</p>
                 <p v-if="batchPreview.basis_counts.manual_template_order" class="notice">其中 {{ batchPreview.basis_counts.manual_template_order }} 对依据完整元数据和各端调用顺序扩展，请确认它们属于同一组重复调用。</p>
                 <p v-if="batchPreview.mode==='confirmed_template'" class="notice">{{ batchPreview.pair_count }} 对按人工确认的两侧模板扩展，元数据差异：{{ batchPreview.comparison.different_fields.join('、') || '无' }}。此模式仅包含与当前选中一对各自元数据一致的调用。</p>
