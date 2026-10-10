@@ -2,7 +2,9 @@
 
 浏览器上传、任务队列、可视化和报告下载，见 [单机 Web 工作台部署指南](../profiling_web/README.md)。原 CLI 和 Skill 接口保持不变。
 
-Excel/Web 的五页签布局、整体比较口径和下钻方式见 [整体调用视图说明](docs/whole-call-views.md)。整体视图不改变类型表分配或 TOTAL，不可跨视图相加。
+Excel/Web 的主要页签布局、整体比较口径和下钻方式见 [整体调用视图说明](docs/whole-call-views.md)。整体视图不改变类型表分配或 TOTAL，不可跨视图相加。
+
+Cube/Vector 总览：`aicore_time(us)=0` 的 NPU kernel 归为 Vector，`>0` 归为 Cube，缺失/无效为未知；单独汇总 `aicore_time(us)`、`aiv_vec_time(us)` 和有效记录数。各类耗时使用 kernel `Duration(us)`，占比分母为各端全部计算 kernel。GPU 继承已映射 NPU 分类并按事件去重，跨类组记为混合、未映射单列，GPU 内存活动独立保留；GPU 类别仅是参考，非硬件利用率。输出包括 `cube_vector_statistic.csv`、`summary.json/core_breakdown` 和 Excel「Cube-Vector总览」页签。
 
 该工具从 GPU 与 NPU 的 PyTorch Profiler trace 中提取 `aten::` 调用，先规范化 shape、dtype 和 Module，再使用语义锚点与局部执行顺序进行对齐，并把每个 aten 实例直接下发的 device kernel 作为一个 **kernel bundle** 进行比较。NPU 的 `kernel_details.csv` 用于为匹配到的 GPU bundle 补充 NPU `Type`、`Core Type`、shape 和 dtype。
 

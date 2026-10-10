@@ -38,6 +38,8 @@ class KernelDetail:
     output_shapes: str = ""
     output_dtypes: str = ""
     raw: Dict[str, str] = field(default_factory=dict)
+    aicore_time_us: Optional[float] = None
+    aiv_vec_time_us: Optional[float] = None
 
 
 @dataclass

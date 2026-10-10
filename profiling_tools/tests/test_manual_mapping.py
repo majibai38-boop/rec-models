@@ -13,20 +13,22 @@ from profiling_tools.tests.test_logical_calls import op, profile
 from profiling_tools.tests.test_scope_recovery import strong
 
 
-def nested_fixture(root):
+def nested_fixture(root, count=1):
     root = Path(root)
     for side, pid in [('gpu',1),('npu',3)]:
-        args = {'External id':1,'Input Dims':[[4],[],[4],[4],[]],
-                'Input type':['float','Scalar','long','float','Scalar']}
-        events = [complete('ProfilerStep#1','user_annotation',0,100,pid,pid),
-                  complete('nn.Module: IndexBlock_0','python_function',1,90,pid,pid),
-                  complete('aten::index_add_','cpu_op',10,10,pid,pid,args)]
-        if side == 'npu':
-            events.append(complete('aten::index_add','cpu_op',12,5,pid,pid,{**args,'External id':2}))
-        events.append(complete('index_kernel','kernel',30,4 if side=='npu' else 2,pid+1,7,
-                               {'External id':2 if side=='npu' else 1,'stream':7}))
+        events = [complete('ProfilerStep#1','user_annotation',0,100*count,pid,pid),
+                  complete('nn.Module: IndexBlock_0','python_function',1,100*count-10,pid,pid)]
+        for i in range(count):
+            args = {'External id':2*i+1,'Input Dims':[[4],[],[4],[4],[]],
+                    'Input type':['float','Scalar','long','float','Scalar']}
+            events.append(complete('aten::index_add_','cpu_op',100*i+10,10,pid,pid,args))
+            if side == 'npu':
+                events.append(complete('aten::index_add','cpu_op',100*i+12,5,pid,pid,{**args,'External id':2*i+2}))
+            events.append(complete('index_kernel','kernel',100*i+30,4 if side=='npu' else 2,pid+1,7,
+                                  {'External id':2*i+(2 if side=='npu' else 1),'stream':7}))
         (root/f'{side}.json').write_text(json.dumps({'traceEvents':events}),encoding='utf-8')
-    (root/'details.csv').write_text('Name,Type,Duration(us),Start Time(us),Stream ID,Device_id,Step ID\nindex_kernel,IndexAdd,4,30,7,0,1\n',encoding='utf-8')
+    (root/'details.csv').write_text('Name,Type,Duration(us),Start Time(us),Stream ID,Device_id,Step ID\n'+
+                                  ''.join(f'index_kernel,IndexAdd,4,{100*i+30},7,0,1\n' for i in range(count)),encoding='utf-8')
     return CompareConfig(str(root/'gpu.json'),str(root/'npu.json'),str(root/'details.csv'),str(root/'out'),gpu_step='1',npu_step='1')
 
 

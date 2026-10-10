@@ -1240,6 +1240,8 @@ def load_kernel_details(path: str, requested_step: str = "") -> List[KernelDetai
                     output_shapes=_row_lookup(row, "Output Shapes"),
                     output_dtypes=_row_lookup(row, "Output Data Types"),
                     raw=dict(row),
+                    aicore_time_us=_safe_float(_row_lookup(row, "aicore_time(us)", "aicore_time(μs)", "aicore_time")),
+                    aiv_vec_time_us=_safe_float(_row_lookup(row, "aiv_vec_time(us)", "aiv_vec_time(μs)", "aiv_vec_time")),
                 )
             )
     return details

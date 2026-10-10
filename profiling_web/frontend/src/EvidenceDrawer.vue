@@ -32,6 +32,7 @@ const groups = computed(() => [
 ])
 const info = computed(() => [
   ...(props.record['Manual Link ID'] ? [['关联来源','人工确认（非自动验证）'], ['确认理由',props.record['Manual Reason']]] : []),
+  ...(props.record['Manual Batch ID'] ? [['批量关联', props.record['Manual Batch ID']], ['配对依据', props.record['Manual Pair Basis']==='aligned_cpu_scope' ? '已有 CPU 对齐' : '人工模板 + 调用顺序']] : []),
   ['逻辑调用', value(['Whole OP','NPU CPU OP Name','cpu_op'])], ['GPU CPU op', value(['GPU OP Name'])],
   ['CPU 对齐',value(['CPU Alignment Status','cpu_alignment_status','CPU Match Confidence'])],
   ['Kernel 比较',value(['Kernel Comparison Status','kernel_comparison_status','Mapping Mode'])],

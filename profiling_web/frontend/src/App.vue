@@ -5,6 +5,7 @@ import WholeCallTable from './WholeCallTable.vue'
 import TypeTable from './TypeTable.vue'
 import EvidenceDrawer from './EvidenceDrawer.vue'
 import ManualLinkDialog from './ManualLinkDialog.vue'
+import CoreBreakdown from './CoreBreakdown.vue'
 import { cleanView, readLocation, viewQuery, readSavedViews, csvCell, normalizeStep } from './viewState.js'
 const logged = ref(false), token = ref(''), error = ref(''), busy = ref(false), config = ref({})
 const jobs = ref([]), job = ref(null), tab = ref('overview'), name = ref(''), files = reactive({}), uploading = ref(''), uploadPercent = ref(0)
@@ -221,6 +222,7 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
           <p class="notice">全任务比较范围（不随下方筛选改变）：GPU PID {{ job.options.gpu_pid || '自动选择' }} / {{ job.options.all_steps ? '完整采集' : job.options.gpu_step }}；NPU PID {{ job.options.npu_pid || '自动选择' }} / {{ job.options.all_steps ? '完整采集' : job.options.npu_step }}。耗时图沿用类型表的当前筛选条件。</p>
           <div class="result-meta"><span class="tag success">✓ {{ summary.saved_validation?.checks_run }} 项校验通过</span><span class="muted">引擎 {{ summary.producer?.version }} · {{ summary.status === 'complete_with_gaps' ? '已完成，仍有覆盖缺口' : '已完成' }}</span><a class="button primary" :href="download('npu_gpu_op_statistic.xlsx')">↓ 下载 Excel</a><details class="downloads"><summary>更多输出</summary><a v-for="file in summary.reports" :key="file" :href="download(file)">{{ file }}</a></details></div>
           <div class="metrics"><article><span>NPU 总时间</span><strong>{{ fmt(overall?.npu_total_time_us) }}<small> μs</small></strong><p>kernel_details-backed</p></article><article><span>GPU 总时间</span><strong>{{ fmt(overall?.gpu_total_time_us) }}<small> μs</small></strong><p>计算 kernel + 内存活动，去重</p></article><article><span>Comparable Ratio · GPU/NPU</span><strong :class="ratioClass(overall?.comparable_ratio_gpu_npu)">{{ fmt(overall?.comparable_ratio_gpu_npu, 3) }}<small> ×</small></strong><p>对应可比子集，不包含所有工作</p></article><article><span>Total Time Ratio · GPU/NPU</span><strong :class="ratioClass(overall?.total_time_ratio_gpu_npu)">{{ fmt(overall?.total_time_ratio_gpu_npu, 3) }}<small> ×</small></strong><p>总体范围比较，非等价工作量证明</p></article></div>
+          <CoreBreakdown :data="summary.core_breakdown" />
           <details class="notice"><summary>统计口径与 {{ summary.warnings.length }} 条警告</summary><p>耗时是事件时长之和，不是墙钟时间。NPU trace-only 任务不计入 TOTAL；GPU 未映射计算与内存活动计入。整体算子视图与类型视图重叠，不能累加。</p><p v-for="(w, i) in summary.warnings" :key="i">{{ w.message }} <span v-if="w.count">数量 {{ w.count }}，{{ fmt(w.time_us) }} μs</span></p></details>
           <div class="tabs" role="tablist"><button v-for="[key, label] in tabs" :key="key" :class="{ active: tab === key }" @click="switchTab(key)" role="tab" :aria-selected="tab === key">{{ label }}</button></div>
           <section class="panel result-panel">

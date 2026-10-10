@@ -1180,7 +1180,7 @@ class CompareProfilesTest(unittest.TestCase):
             }
             self.assertEqual(
                 [sheet.attrib["name"] for sheet in workbook_xml.findall(".//main:sheet", namespace)],
-                ["类型对比", "整体对比", "覆盖率诊断", "调用明细", "耗时分布"],
+                ["类型对比", "整体对比", "覆盖率诊断", "调用明细", "耗时分布", "Cube-Vector总览"],
             )
             for worksheet in worksheets:
                 merged_ranges = {

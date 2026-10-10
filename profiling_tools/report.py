@@ -1805,6 +1805,10 @@ def write_reports(
     if manual_enabled or manual_links:
         from .manual_mapping import apply_links
         apply_links(gpu, npu, npu_kernel_mapping_rows, manual_links)
+    from .core_breakdown import annotate_counters, build_core_breakdown, statistic_rows
+    annotate_counters(npu, npu_kernel_mapping_rows)
+    core_breakdown = build_core_breakdown(gpu, npu_kernel_mapping_rows)
+    core_statistic_rows = statistic_rows(core_breakdown)
     cpu_bundle_rows = build_cpu_bundle_rows(gpu, npu, matches, npu_kernel_mapping_rows)
     cpu_bundle_statistic_rows = summarize_cpu_bundles(cpu_bundle_rows)
     precision_rows, precision_diagnostics = build_precision_rows(gpu, npu, matches)
@@ -1849,6 +1853,7 @@ def write_reports(
     unmatched_npu_rows = build_unmatched_rows(npu, unmatched_npu)
 
     reports = {
+        "cube_vector_statistic.csv": core_statistic_rows,
         "matches.csv": match_rows,
         "gpu_kernel_mapping.csv": mapping_rows,
         "npu_kernel_gpu_mapping.csv": npu_kernel_mapping_rows,
@@ -2056,6 +2061,10 @@ def write_reports(
                 merge_columns,
                 wrap_columns=("OP Type",),
             ),
+            TableSheet(
+                "Cube-Vector总览", tuple(core_statistic_rows[0]), rows=core_statistic_rows,
+                freeze_columns=2, wrap_columns=("Side", "Scope"),
+            ),
         ],
     )
 
@@ -2245,6 +2254,7 @@ def write_reports(
             ),
         },
         "gpu_accounting": gpu_accounting,
+        "core_breakdown": core_breakdown,
         "precision_analysis": {
             **precision_diagnostics,
             "pattern_counts": dict(Counter(row["Pattern"] for row in precision_rows)),

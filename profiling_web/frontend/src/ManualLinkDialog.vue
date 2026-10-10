@@ -1,14 +1,20 @@
 <script setup>
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 const props = defineProps({ job: Object, type: Object, api: Function })
 const emit = defineEmits(['close', 'submitted', 'upgrade'])
 const data = ref(null), selected = ref(''), targetId = ref(''), search = ref(''), reason = ref('')
 const loading = ref(false), saving = ref(false), error = ref(''), offset = ref(0), gpuOffset = ref(0), dialog = ref(null)
 const pendingUndo = ref('')
+const batchPreview = ref(null), preparingBatch = ref(false)
+let batchSequence = 0
 let sequence = 0, previousFocus
 const fmt = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 3 })
 const candidate = computed(() => data.value?.candidates.find(r => r.id === selected.value))
 const target = computed(() => data.value?.target)
+const batchCoverage = computed(() => props.type.npu_total_time_us > 0
+  ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (batchPreview.value?.npu_time_us || 0)) / props.type.npu_total_time_us)) + '%'
+  : '—')
+watch(selected, () => {batchSequence++; batchPreview.value=null; preparingBatch.value=false})
 const coverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (target.value?.time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
@@ -35,6 +41,26 @@ async function submit() {
     emit('submitted', job)
   } catch(e) {error.value = e.message} finally {saving.value = false}
 }
+async function previewBatch() {
+  if (!candidate.value || loading.value || saving.value) return
+  const seq = ++batchSequence
+  preparingBatch.value=true; batchPreview.value=null; error.value=''
+  try {
+    const result = await props.api(`/jobs/${props.job.id}/manual-batch/preview`, 'POST', {
+      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value})
+    if (seq === batchSequence) batchPreview.value=result
+  } catch(e) {if (seq === batchSequence) error.value=e.message}
+  finally {if (seq === batchSequence) preparingBatch.value=false}
+}
+async function submitBatch() {
+  if (!batchPreview.value || !reason.value.trim() || saving.value || loading.value) return
+  saving.value=true; error.value=''
+  try {
+    emit('submitted', await props.api(`/jobs/${props.job.id}/manual-batch`, 'POST', {
+      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value,
+      preview_token:batchPreview.value.preview_token, reason:reason.value.trim()}))
+  } catch(e) {error.value=e.message} finally {saving.value=false}
+}
 async function undo(link) {
   saving.value = true; error.value = ''
   try {emit('submitted', await props.api(`/jobs/${props.job.id}/manual-links/${link.id}/undo`, 'POST', {attempt:data.value.attempt}))}
@@ -49,7 +75,7 @@ function key(e) {
   else if (!e.shiftKey && document.activeElement === last) {e.preventDefault(); first?.focus()}
 }
 onMounted(() => {previousFocus = document.activeElement; dialog.value.focus(); document.addEventListener('keydown',key); load()})
-onBeforeUnmount(() => {sequence++; document.removeEventListener('keydown',key); previousFocus?.focus()})
+onBeforeUnmount(() => {sequence++; batchSequence++; document.removeEventListener('keydown',key); previousFocus?.focus()})
 </script>
 
 <template>
@@ -91,11 +117,22 @@ Dtype: {{ JSON.stringify(r.dtypes) }}</pre></details>
             <template v-if="candidate">
               <h3>3. 确认关联</h3><p>新增可比 NPU 时间 {{ fmt(target.time_us) }} μs；分配 GPU 时间 {{ fmt(candidate.time_us) }} μs。预计类型覆盖率 {{ coverage }}，所选整组 GPU/NPU 比值 {{ target.time_us ? fmt(candidate.time_us/target.time_us) : '—' }}。TOTAL 不变。</p>
               <label>确认理由<textarea v-model="reason" maxlength="500" placeholder="例如：已核对两侧 index_add_ 调用，NPU 仅多一层内部调用" :disabled="saving" /></label>
-              <button class="primary" :disabled="saving || !reason.trim()" @click="submit">{{ saving ? '提交中…' : '确认关联并更新报告' }}</button>
+              <div class="toolbar"><button :disabled="saving || !reason.trim()" @click="submit">{{ saving ? '提交中…' : '仅确认当前组' }}</button><button class="primary" :disabled="saving || preparingBatch" @click="previewBatch">{{ preparingBatch ? '正在生成预览…' : '预览同类批量关联' }}</button></div>
+              <section v-if="batchPreview" class="manual-candidate batch-preview" aria-label="批量关联预览">
+                <h3>批量关联预览 · {{ batchPreview.pair_count }} 对调用</h3>
+                <p>以当前选择为模板：同模块、同调用结构的 NPU {{ batchPreview.scope_target_count }} 组，GPU {{ batchPreview.scope_candidate_count }} 组。</p>
+                <p>可关联 NPU {{ batchPreview.npu_kernel_count }} 个 kernel ↔ GPU {{ batchPreview.gpu_kernel_count }} 个 kernel。新增可比 NPU 时间 {{ fmt(batchPreview.npu_time_us) }} μs，分配 GPU 时间 {{ fmt(batchPreview.gpu_time_us) }} μs；预计类型覆盖率 {{ batchCoverage }}。</p>
+                <p class="muted small">每对独立保存，整批只生成一次报告，可整批撤销。TOTAL 不变。</p>
+                <p v-if="batchPreview.basis_counts.manual_template_order" class="notice">其中 {{ batchPreview.basis_counts.manual_template_order }} 对依据完整元数据和各端调用顺序扩展，请确认它们属于同一组重复调用。</p>
+                <p v-if="batchPreview.excluded_count">同模板有 {{ batchPreview.excluded_count }} 组未纳入：<span v-for="(n,why) in batchPreview.excluded_reasons" :key="why">{{ why }}（{{ n }} 组）；</span></p>
+                <p v-if="batchPreview.other_target_count" class="muted small">该类型另有 {{ batchPreview.other_target_count }} 组属于其他模块或调用结构，本次不包含。</p>
+                <details><summary>查看配对样本（{{ batchPreview.pairs.length }} / {{ batchPreview.pair_count }}）</summary><div class="table-scroll"><table><thead><tr><th>NPU CPU # / kernels</th><th>GPU CPU # / kernels</th><th>依据</th></tr></thead><tbody><tr v-for="p in batchPreview.pairs" :key="p.target_id"><td>{{ p.npu_cpu_index }} / {{ p.npu_indices.length }}</td><td>{{ p.gpu_cpu_index }} / {{ p.gpu_indices.length }}</td><td>{{ p.basis==='aligned_cpu_scope' ? '已有 CPU 对齐' : '人工模板 + 调用顺序' }}</td></tr></tbody></table></div></details>
+                <button class="primary" :disabled="saving || !reason.trim()" @click="submitBatch">{{ saving ? '提交中…' : `一次确认 ${batchPreview.pair_count} 对并更新报告` }}</button>
+              </section>
             </template>
           </div>
           <h3 v-if="data.links.length">已人工确认（可撤销）</h3>
-          <article v-for="link in data.links" :key="link.id" class="manual-candidate"><p>NPU #{{ link.npu_indices.join(', ') }} ↔ GPU #{{ link.gpu_indices.join(', ') }}</p><p>{{ link.reason }}</p><template v-if="pendingUndo===link.id"><p>撤销后重新生成报告，自动结果会保留。</p><button :disabled="saving" @click="undo(link)">确认撤销</button><button :disabled="saving" @click="pendingUndo=''">取消撤销</button></template><button v-else :disabled="saving" @click="pendingUndo=link.id">撤销关联</button></article>
+          <article v-for="link in data.links" :key="link.id" class="manual-candidate"><p v-if="link.pair_count>1">批量关联 {{ link.pair_count }} 对调用 · NPU {{ link.npu_indices.length }} / GPU {{ link.gpu_indices.length }} 个 kernel</p><p v-else>NPU #{{ link.npu_indices.join(', ') }} ↔ GPU #{{ link.gpu_indices.join(', ') }}</p><p>{{ link.reason }}</p><template v-if="pendingUndo===link.id"><p>撤销{{ link.pair_count>1 ? '整批 '+link.pair_count+' 对关联' : '关联' }}后重新生成报告，自动结果会保留。</p><button :disabled="saving" @click="undo(link)">确认撤销</button><button :disabled="saving" @click="pendingUndo=''">取消撤销</button></template><button v-else :disabled="saving" @click="pendingUndo=link.id">{{ link.pair_count>1 ? '撤销整批' : '撤销关联' }}</button></article>
         </template>
       </template>
     </section>
@@ -111,4 +148,5 @@ Dtype: {{ JSON.stringify(r.dtypes) }}</pre></details>
 .manual-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 .manual-dialog p { overflow-wrap:anywhere; }
 .manual-dialog label { cursor:pointer; }
+.batch-preview>.primary { margin-top:16px; }
 </style>

@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .index import call_evidence, downloadable, query_index, manual_options, manual_group
+from .index import call_evidence, downloadable, query_index, manual_options, manual_group, manual_batch_plan
 from .settings import INPUTS, Settings, disk_usage
 from .store import Conflict, Store
 from .worker import worker_lock
@@ -86,12 +86,19 @@ class Login(BaseModel):
     token: str = Field(max_length=512)
 
 
-class ManualConfirmation(BaseModel):
+class ManualSeed(BaseModel):
     model_config = ConfigDict(extra='forbid')
     attempt: str = Field(pattern=r'^[0-9a-f]{32}$')
     target_id: str = Field(min_length=1, max_length=100)
     candidate_id: str = Field(min_length=1, max_length=100)
+
+
+class ManualConfirmation(ManualSeed):
     reason: str = Field(min_length=1, max_length=500)
+
+
+class ManualBatchConfirmation(ManualConfirmation):
+    preview_token: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
 class ManualUndo(BaseModel):
@@ -370,9 +377,46 @@ def create_app(settings=None):
         except ValueError as exc:
             raise HTTPException(422,str(exc)) from exc
         result['supported'] = result['supported'] and (root/'reports/manual_catalog.json').is_file()
-        result.update(attempt=job['attempt'], links=[r for r in job['manual'].get('links',[])
-                      if (r['op_type'],r['device_id'],r['core_type']) == (op_type,device_id,core_type)])
+        from profiling_tools.manual_mapping import link_history
+        result.update(attempt=job['attempt'], links=link_history([r for r in job['manual'].get('links',[])
+                      if (r['op_type'],r['device_id'],r['core_type']) == (op_type,device_id,core_type)]))
         return result
+
+    def check_manual_limit(links, added):
+        if len({r.get('batch_id') or r['id'] for r in links}) >= 100 or len(links) + added > 10000:
+            raise HTTPException(422, '单任务最多支持 100 次人工确认、合计 10000 对关联')
+
+    def get_batch(job_id, body):
+        job, root = result_paths(job_id)
+        if job['attempt'] != body.attempt:
+            raise Conflict('结果已变化，请刷新后重试')
+        try:
+            target, plan = manual_batch_plan(root/'index.sqlite', body.target_id, body.candidate_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        token = hashlib.sha256(json.dumps([job['attempt'], plan], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        return job, target, plan, token
+
+    @app.post('/api/jobs/{job_id}/manual-batch/preview')
+    def preview_manual_batch(job_id: str, body: ManualSeed):
+        job, _, plan, token = get_batch(job_id, body)
+        return {**plan, 'pairs': plan['pairs'][:20], 'attempt': job['attempt'], 'preview_token': token}
+
+    @app.post('/api/jobs/{job_id}/manual-batch', status_code=202)
+    def confirm_manual_batch(job_id: str, body: ManualBatchConfirmation):
+        if not body.reason.strip():
+            raise HTTPException(422, '请填写人工确认理由')
+        job, target, plan, token = get_batch(job_id, body)
+        if not hmac.compare_digest(token, body.preview_token):
+            raise Conflict('批量预览已变化，请重新预览后确认')
+        links = job['manual'].get('links', [])
+        check_manual_limit(links, plan['pair_count'])
+        batch_id, created = uuid.uuid4().hex, time.time()
+        additions = [{'id': uuid.uuid4().hex, 'batch_id': batch_id, **pair,
+                      'op_type': target['op_type'], 'device_id': target['device_id'], 'core_type': target['core_type'],
+                      'reason': body.reason.strip(), 'created': created, 'source_attempt': body.attempt}
+                     for pair in plan['pairs']]
+        return store.enqueue_manual(job_id, body.attempt, [*links, *additions])
 
     @app.post('/api/jobs/{job_id}/manual-links',status_code=202)
     def confirm_manual(job_id: str, body: ManualConfirmation):
@@ -382,8 +426,7 @@ def create_app(settings=None):
         if not body.reason.strip():
             raise HTTPException(422,'请填写人工确认理由')
         links = job['manual'].get('links',[])
-        if len(links) >= 100:
-            raise HTTPException(422,'单任务最多支持 100 组人工关联')
+        check_manual_limit(links, 1)
         try:
             target = manual_group(root/'index.sqlite','targets',body.target_id)
             candidate = manual_group(root/'index.sqlite','candidates',body.candidate_id)
@@ -399,9 +442,10 @@ def create_app(settings=None):
     def undo_manual(job_id: str, link_id: str, body: ManualUndo):
         job, _ = result_paths(job_id)
         links = job['manual'].get('links',[])
-        if not any(r['id'] == link_id for r in links):
+        selected = [r for r in links if (r.get('batch_id') or r['id']) == link_id]
+        if not selected:
             raise HTTPException(404,'人工关联不存在')
-        return store.enqueue_manual(job_id,body.attempt,[r for r in links if r['id'] != link_id])
+        return store.enqueue_manual(job_id,body.attempt,[r for r in links if (r.get('batch_id') or r['id']) != link_id])
 
     @app.get("/api/jobs/{job_id}/results")
     def results(job_id: str, kind: str = "operators", op_type: str | None = None,

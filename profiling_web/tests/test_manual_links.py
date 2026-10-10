@@ -17,7 +17,7 @@ class ManualWebTest(unittest.TestCase):
     complete = base.WebTest.complete
 
     def upload(self, ident):
-        config = nested_fixture(self.root)
+        config = nested_fixture(self.root, count=getattr(self, 'call_count', 1))
         for role in INPUTS:
             response = self.client.put(f'/api/jobs/{ident}/inputs/{role}',content=Path(getattr(config,role)).read_bytes())
             self.assertEqual(response.status_code,200,response.text)
@@ -102,3 +102,48 @@ class ManualWebTest(unittest.TestCase):
         self.assertEqual(restored['status'],'succeeded')
         self.assertIn('未生效',restored['error'])
         self.assertEqual(restored['summary'],old['summary'])
+
+    def test_260_call_batch_preview_confirm_export_and_undo(self):
+        self.call_count = 260
+        ident = self.complete()
+        before = self.store.get(ident)
+        payload = self.request_link(ident)
+        seed = {k: payload[k] for k in ('attempt', 'target_id', 'candidate_id')}
+        with patch('profiling_tools.parser._load_trace_events', side_effect=AssertionError('preview must use index')):
+            response = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=seed)
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()
+        self.assertEqual(preview['pair_count'], 260)
+        self.assertEqual(preview['basis_counts'], {'aligned_cpu_scope': 260})
+        self.assertEqual(len(preview['pairs']), 20)
+        self.assertEqual(self.store.get(ident)['attempt'], before['attempt'])
+        request = {**payload, 'preview_token': preview['preview_token']}
+        bad = self.client.post(f'/api/jobs/{ident}/manual-batch', json={**request, 'preview_token': '0'*64})
+        self.assertEqual(bad.status_code, 409, bad.text)
+        response = self.client.post(f'/api/jobs/{ident}/manual-batch', json=request)
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(self.client.post(f'/api/jobs/{ident}/manual-batch', json=request).status_code, 409)
+        self.execute()
+        after = self.store.get(ident)
+        self.assertEqual(after['status'], 'succeeded', after['error'])
+        self.assertEqual(after['error'], '')
+        for key in ('gpu_total_time_us', 'npu_total_time_us'):
+            self.assertEqual(before['summary']['gpu_accounting'][key], after['summary']['gpu_accounting'][key])
+        row = next(r for r in self.client.get(f'/api/jobs/{ident}/results').json()['items'] if r['op_type']=='IndexAdd')
+        self.assertEqual(row['manual_count'], 260)
+        self.assertEqual(row['coverage']['comparable']['time_pct'], 100)
+        links = self.client.get(f'/api/jobs/{ident}/artifacts/manual_links.json').json()
+        self.assertEqual(len(links), 260)
+        self.assertTrue(all(len(r['gpu_indices']) == len(r['npu_indices']) == 1 for r in links))
+        self.assertEqual(len({i for r in links for i in r['gpu_indices']}), 260)
+        self.assertEqual(len({r['batch_id'] for r in links}), 1)
+        history = self.panel(ident)['links']
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]['pair_count'], 260)
+        undo = self.client.post(f"/api/jobs/{ident}/manual-links/{history[0]['id']}/undo", json={'attempt': after['attempt']})
+        self.assertEqual(undo.status_code, 202, undo.text)
+        self.execute()
+        restored = self.store.get(ident)
+        self.assertEqual(restored['error'], '')
+        self.assertEqual(restored['summary']['gpu_accounting'], before['summary']['gpu_accounting'])
+        self.assertEqual(len(self.panel(ident)['links']), 0)

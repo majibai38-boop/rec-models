@@ -68,6 +68,11 @@ class WebTest(unittest.TestCase):
         job = self.client.get(f"/api/jobs/{job_id}").json()
         self.assertEqual(job["summary"]["status"], "complete_with_gaps")
         self.assertEqual(job["summary"]["overall_statistics"][0]["total_time_ratio_gpu_npu"], 1.25)
+        core = job["summary"]["core_breakdown"]
+        self.assertEqual(core["npu"]["groups"][2]["count"], 1)
+        self.assertIsNone(core["npu"]["aicore_time_us"])
+        self.assertEqual(core["gpu_reference"]["groups"][3]["time_us"], 2)
+        self.assertEqual(core["gpu_reference"]["groups"][4]["time_us"], 3)
         self.assertNotIn(str(self.root), json.dumps(job))
         result = self.client.get(f"/api/jobs/{job_id}/results", params={"search": "Add", "limit": 1}).json()
         self.assertEqual(result["total"], 1)

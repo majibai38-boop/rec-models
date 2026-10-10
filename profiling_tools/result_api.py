@@ -82,6 +82,51 @@ def _statistic_record(row):
     return result
 
 
+def _validate_core_breakdown(data, mappings, inventory, npu_inventory, check, close):
+    """Reconcile persisted categories against per-kernel evidence and inventories."""
+    npu_classes, gpu_users = {}, defaultdict(set)
+    for row in mappings:
+        value = row["NPU aicore_time(us)"]
+        number = None if value == "" else _number(value)
+        expected = "Unknown" if number is None or number < 0 else "Vector" if number == 0 else "Cube"
+        index = int(row["NPU Kernel Index"])
+        check(f"core.npu.{index}.class", row["NPU Compute Class"] == expected)
+        npu_classes[index] = expected
+        if _true(row["Mapped"]):
+            for i in _ids(row, "GPU Kernel Indices"):
+                gpu_users[i].add(expected)
+    gpu_classes = {}
+    for index in inventory["kernel"]:
+        names = gpu_users[index]
+        gpu_classes[index] = ("Unmapped" if not names else "Unknown" if "Unknown" in names else
+                              "Mixed" if len(names) > 1 else next(iter(names)))
+    for side, durations, classes, categories in (
+        ("npu", npu_inventory, npu_classes, {"Cube", "Vector", "Unknown"}),
+        ("gpu_reference", inventory["kernel"], gpu_classes, {"Cube", "Vector", "Mixed", "Unknown", "Unmapped"}),
+    ):
+        block = data[side]
+        total = sum(durations.values())
+        check(f"core.{side}.population", block["total_count"] == len(durations) and close(block["total_time_us"], total))
+        check(f"core.{side}.categories", len(block["groups"]) == len(categories) and
+              {g["category"] for g in block["groups"]} == categories)
+        for group in block["groups"]:
+            indices = {i for i, name in classes.items() if name == group["category"]}
+            duration = sum(durations[i] for i in indices)
+            prefix = f"core.{side}.{group['category']}"
+            check(prefix + ".count_time", group["count"] == len(indices) and close(group["time_us"], duration))
+            check(prefix + ".time_pct", close(group["time_pct"], round(100 * duration / total, 6)) if total else group["time_pct"] is None)
+            check(prefix + ".count_pct", close(group["count_pct"], round(100 * len(indices) / len(durations), 6)) if durations else group["count_pct"] is None)
+    for group in [data["npu"], *data["npu"]["groups"]]:
+        members = mappings if "category" not in group else [r for r in mappings if r["NPU Compute Class"] == group["category"]]
+        for field in ("aicore_time", "aiv_vec_time"):
+            values = [_number(r[f"NPU {field}(us)"]) for r in members if r[f"NPU {field}(us)"] != ""]
+            valid = all(v >= 0 for v in values) and group[f"{field}_measured_count"] == len(values)
+            valid = valid and (close(group[f"{field}_us"], sum(values)) if values or not members else group[f"{field}_us"] is None)
+            check(f"core.npu.{group.get('category', 'total')}.{field}", valid)
+    check("core.excluded_memory", data["gpu_reference"]["excluded_memory_count"] == len(inventory["memory"]) and
+          close(data["gpu_reference"]["excluded_memory_time_us"], sum(inventory["memory"].values())))
+
+
 def validate_results(output_dir):
     """Recalculate checks from inventories and mappings, not saved PASS flags.
 
@@ -141,6 +186,8 @@ unverified for provenance. Neither missing records nor NaNs count as healthy 0.
         check("npu_inventory_time", close(sum(npu_inventory.values()), sum(_number(r["NPU Duration(us)"]) for r in mappings)))
         check("npu_total_count", int(total["NPU Kernel Count"]) == len(mappings) == summary["comparison"]["npu_first_kernel_count"])
         check("npu_total_time", close(total["NPU Total Time(us)"], sum(npu_inventory.values())))
+        if summary.get("core_breakdown") is not None:
+            _validate_core_breakdown(summary["core_breakdown"], mappings, inventory, npu_inventory, check, close)
         mapped, comparable = {}, {}
         type_users = defaultdict(set)
         for kind, index_field, duration_field in (
@@ -270,6 +317,7 @@ def summarize_results(output_dir):
             "scope": {side: {k: summary[side].get(k) for k in ("source", "selected_pid", "selected_step", "kernel_count")}
                       for side in ("gpu", "npu")},
             "gpu_accounting": summary.get("gpu_accounting"), "coverage": summary.get("coverage_diagnostics"),
+            "core_breakdown": summary.get("core_breakdown"),
             "overall_statistics": [_statistic_record(r) for r in read_csv(root / "npu_gpu_op_statistic.csv")
                                    if r.get("Row Kind") == "total"],
             "low_coverage_types": [{k: t[k] for k in ("device_id", "op_type", "core_type", "priority_rank",
