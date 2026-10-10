@@ -127,7 +127,7 @@ def rank_candidate(target, candidate):
             'reasons': reasons, 'warnings': warnings}
 
 
-def _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order):
+def _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order, *, all_templates=False):
     """Prefer a complete CPU bijection; otherwise validate chronological pairs."""
     nt, gt = sorted(nt, key=order), sorted(gt, key=order)
     positions_n = {t['id']: i + 1 for i, t in enumerate(nt)}
@@ -138,7 +138,7 @@ def _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order):
                 and len({anchors[t['id']][0] for t in nt}) == len(nt))
     if complete:
         ordered = [(t, by_gpu[anchors[t['id']][0]]) for t in nt]
-        basis = 'manual_confirmed_cpu_scope'
+        basis = 'manual_confirmed_family_cpu_scope' if all_templates else 'manual_confirmed_cpu_scope'
     else:
         ordered = list(zip(nt, gt))
         conflicts = [{'npu_cpu_index': originals[t['id']]['cpu_index'],
@@ -153,24 +153,44 @@ def _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order):
                 f"已有 CPU 候选为 {', '.join(first['aligned_candidate_ids'][:5])}。"
                 '当前模板未形成完整唯一的 CPU 对应，不能直接按顺序扩展；请核对调用范围或缩小模板。',
                 conflict_count=len(conflicts), conflicts=conflicts[:20])
-        basis = 'manual_confirmed_template_order'
+        basis = 'manual_confirmed_family_order' if all_templates else 'manual_confirmed_template_order'
     partner = next(g for t, g in ordered if t['id'] == seed_t['id'])
     position = {'npu': positions_n[seed_t['id']], 'gpu': positions_g[seed_c['id']],
                 'total': len(nt), 'paired_gpu': positions_g[partner['id']],
                 'basis': basis}
     if partner['id'] != seed_c['id']:
         method = '已有 CPU 对齐' if complete else '同类调用顺序'
+        scope = '同模块' if all_templates else '同模板'
         raise BatchConflict('seed_pair_mismatch',
-            f"当前选中 NPU 同模板第 {position['npu']}/{len(nt)} 次、GPU 第 {position['gpu']}/{len(gt)} 次。"
+            f"当前选中 NPU {scope}第 {position['npu']}/{len(nt)} 次、GPU 第 {position['gpu']}/{len(gt)} 次。"
             f"按{method}，该 NPU 调用应对应 GPU 第 {position['paired_gpu']} 次（CPU #{partner['cpu_index']}）。"
             '可改选该候选并重新预览整批，无需逐个关联。',
             position=position, suggested_candidate=rank_candidate(originals[seed_t['id']], partner))
     return {t['id']: (t, g, basis) for t, g in ordered}, position
 
 
+def _template_groups(pairs, signature):
+    """Show every metadata relation; sequence-only family expansion must be stable."""
+    groups, nmap, gmap = {}, defaultdict(set), defaultdict(set)
+    for t, g, _ in pairs.values():
+        nk, gk = signature(t), signature(g)
+        nmap[nk].add(gk)
+        gmap[gk].add(nk)
+        if (nk, gk) not in groups:
+            groups[nk, gk] = {'npu': {k: t[k] for k in ('shapes', 'dtypes')},
+                              'gpu': {k: g[k] for k in ('shapes', 'dtypes')}, 'pair_count': 0}
+        groups[nk, gk]['pair_count'] += 1
+    if (any(b == 'manual_confirmed_family_order' for _, _, b in pairs.values()) and
+            any(len(v) > 1 for v in [*nmap.values(), *gmap.values()])):
+        raise BatchConflict('template_alignment_conflict',
+            '同模块顺序配对后，同一 shape/dtype 模板对应了多个对侧模板，无法确认重复调用的一致关系。'
+            '请核实两侧调用顺序，或改用“当前 shape/dtype 模板”分别关联。')
+    return list(groups.values())
+
+
 def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
     """Expand a human-selected seed into independent call pairs, never a mega-bundle."""
-    if mode not in {'strict', 'confirmed_template'}:
+    if mode not in {'strict', 'confirmed_template', 'confirmed_family'}:
         raise ValueError('未知批量关联模式')
     originals = {r['id']: r for r in targets}
     cs = {r['id']: r for r in candidates}
@@ -251,16 +271,20 @@ def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
                 pairs[t['id']] = (t, g, 'manual_template_order')
 
     selection_position = None
-    if mode == 'confirmed_template':
-        # The user confirms a relation between TWO signatures, not equality.
-        # Extend only those exact per-side signatures, with equal populations,
-        # the seed consistent with a CPU bijection or chronological pairing.
-        nt, gt = nparts[signature(seed_t)], gparts[signature(seed_c)]
+    if mode in {'confirmed_template', 'confirmed_family'}:
+        # Confirm either the selected per-side signatures or the entire family.
+        # Both require equal populations and a seed consistent with the pairing;
+        # family order also requires stable repeated metadata relations.
+        all_templates = mode == 'confirmed_family'
+        nt, gt = (scoped_t, scoped_c) if all_templates else (nparts[signature(seed_t)], gparts[signature(seed_c)])
+        scope_label = '同模块全部模板' if all_templates else '人工模板'
         if len(nt) != len(gt):
-            raise ValueError(f'人工模板数量不一致：NPU {len(nt)} 组、GPU {len(gt)} 组；不能按顺序批量关联')
+            raise ValueError(f'{scope_label}数量不一致：NPU {len(nt)} 组、GPU {len(gt)} 组；不能按顺序批量关联')
         if not all(eligible(r) for r in [*nt, *gt]):
             raise ValueError('人工模板包含弱 owner 或缺失 shape/dtype 的调用，请先核实调用证据')
-        pairs, selection_position = _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order)
+        pairs, selection_position = _confirmed_pairs(nt, gt, seed_t, seed_c, originals, order,
+                                                    all_templates=all_templates)
+        _template_groups(pairs, signature)
         for t in scoped_t:
             if t['id'] not in pairs:
                 reasons[t['id']] = '与当前所选 NPU 元数据模板不同'
@@ -293,7 +317,9 @@ def batch_plan(targets, candidates, target_id, candidate_id, mode='strict'):
     excluded = [{'target_id': t['id'], 'cpu_index': t['cpu_index'], 'reason': reasons.get(t['id'], '不符合批量条件')}
                 for t in scoped_t if t['id'] not in pairs]
     fields = ('cpu_index', 'cpu_name', 'module', 'shapes', 'dtypes')
+    templates = _template_groups(pairs, signature)
     return {'pairs': result_pairs, 'mode': mode, 'selection_position': selection_position,
+            'template_count': len(templates), 'templates': templates,
             'comparison': {'npu': {k: seed_t[k] for k in fields}, 'gpu': {k: seed_c[k] for k in fields},
                            'npu_owner_cpu_index': originals[target_id]['cpu_index'],
                            'different_fields': [k for k in fields if k != 'cpu_index' and seed_t[k] != seed_c[k]]},

@@ -18,7 +18,8 @@ class ManualWebTest(unittest.TestCase):
 
     def upload(self, ident):
         config = nested_fixture(self.root, count=getattr(self, 'call_count', 1),
-                                outer_extra=getattr(self, 'outer_extra', False))
+                                outer_extra=getattr(self, 'outer_extra', False),
+                                templates=getattr(self, 'templates', 1), steps=getattr(self, 'steps', 1))
         for role in INPUTS:
             response = self.client.put(f'/api/jobs/{ident}/inputs/{role}',content=Path(getattr(config,role)).read_bytes())
             self.assertEqual(response.status_code,200,response.text)
@@ -111,9 +112,22 @@ class ManualWebTest(unittest.TestCase):
         self.outer_extra = True
         self.check_batch_lifecycle('confirmed_template')
 
+    def test_10_steps_26_templates_preview_confirm_export_and_undo_in_one_batch(self):
+        self.outer_extra, self.templates, self.steps = True, 26, 10
+        self.check_batch_lifecycle('confirmed_family')
+
     def check_batch_lifecycle(self, mode):
         self.call_count = 260
-        ident = self.complete()
+        if mode == 'confirmed_family':
+            ident = self.new()
+            self.upload(ident)
+            self.inspect(ident)
+            response = self.client.post(f'/api/jobs/{ident}/run', json={'all_steps': True})
+            self.assertEqual(response.status_code, 202, response.text)
+            self.execute()
+            self.assertEqual(self.store.get(ident)['status'], 'succeeded', self.store.get(ident)['error'])
+        else:
+            ident = self.complete()
         before = self.store.get(ident)
         payload = self.request_link(ident)
         seed = {k: payload[k] for k in ('attempt', 'target_id', 'candidate_id')}
@@ -121,6 +135,13 @@ class ManualWebTest(unittest.TestCase):
             rejected = self.client.post(f'/api/jobs/{ident}/manual-batch/preview', json=seed)
             self.assertEqual(rejected.status_code, 422, rejected.text)
         seed['mode'] = mode
+        if mode == 'confirmed_family':
+            single = self.client.post(f'/api/jobs/{ident}/manual-batch/preview',
+                                      json={**seed, 'mode': 'confirmed_template'})
+            self.assertEqual(single.status_code, 200, single.text)
+            self.assertEqual(single.json()['pair_count'], 10)
+            self.assertEqual(single.json()['scope_target_count'], 260)
+            self.assertEqual(single.json()['scope_candidate_count'], 260)
         if mode == 'confirmed_template':
             mismatched = {**seed, 'target_id': 'npu:179', 'candidate_id': 'op:0'}
             with patch('profiling_tools.parser._load_trace_events', side_effect=AssertionError('preview must use index')):
@@ -139,8 +160,12 @@ class ManualWebTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         preview = response.json()
         self.assertEqual(preview['pair_count'], 260)
-        basis = 'aligned_cpu_scope' if mode == 'strict' else 'manual_confirmed_template_order'
+        basis = {'strict': 'aligned_cpu_scope', 'confirmed_template': 'manual_confirmed_template_order',
+                 'confirmed_family': 'manual_confirmed_family_order'}[mode]
         self.assertEqual(preview['basis_counts'], {basis: 260})
+        if mode == 'confirmed_family':
+            self.assertEqual(preview['template_count'], 26)
+            self.assertEqual([t['pair_count'] for t in preview['templates']], [10] * 26)
         if mode == 'confirmed_template':
             self.assertEqual(preview['selection_position']['npu'], 180)
             self.assertEqual(preview['selection_position']['gpu'], 180)
@@ -148,7 +173,7 @@ class ManualWebTest(unittest.TestCase):
         self.assertEqual(len(preview['pairs']), 20)
         self.assertEqual(self.store.get(ident)['attempt'], before['attempt'])
         request = {**payload, 'mode': mode, 'preview_token': preview['preview_token']}
-        if mode == 'strict':
+        if mode in {'strict', 'confirmed_family'}:
             wrong_mode = self.client.post(f'/api/jobs/{ident}/manual-batch', json={**request, 'mode': 'confirmed_template'})
             self.assertEqual(wrong_mode.status_code, 409, wrong_mode.text)
         bad = self.client.post(f'/api/jobs/{ident}/manual-batch', json={**request, 'preview_token': '0'*64})

@@ -8,8 +8,9 @@ const pendingUndo = ref('')
 const batchPreview = ref(null), preparingBatch = ref(false)
 const batchIssue = ref(null)
 const confirmedTemplate = ref(false)
-const batchMode = computed(() => confirmedTemplate.value ? 'confirmed_template' : 'strict')
-const basisLabel = (basis) => ({aligned_cpu_scope:'已有 CPU 对齐', manual_template_order:'相同元数据 + 调用顺序', manual_confirmed_template_order:'人工确认两侧模板 + 调用顺序', manual_confirmed_cpu_scope:'人工确认两侧模板 + 已有 CPU 对齐'}[basis] || basis)
+const allTemplates = ref(false)
+const batchMode = computed(() => confirmedTemplate.value ? (allTemplates.value ? 'confirmed_family' : 'confirmed_template') : 'strict')
+const basisLabel = (basis) => ({aligned_cpu_scope:'已有 CPU 对齐', manual_template_order:'相同元数据 + 调用顺序', manual_confirmed_template_order:'人工确认两侧模板 + 调用顺序', manual_confirmed_cpu_scope:'人工确认两侧模板 + 已有 CPU 对齐', manual_confirmed_family_order:'同模块全部模板 + 调用顺序', manual_confirmed_family_cpu_scope:'同模块全部模板 + 已有 CPU 对齐'}[basis] || basis)
 let batchSequence = 0
 let sequence = 0, previousFocus
 const fmt = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 3 })
@@ -18,8 +19,8 @@ const target = computed(() => data.value?.target)
 const batchCoverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (batchPreview.value?.npu_time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
-watch(selected, () => {confirmedTemplate.value=false; batchSequence++; batchPreview.value=null; batchIssue.value=null; preparingBatch.value=false; error.value=''})
-watch(confirmedTemplate, () => {batchSequence++; batchPreview.value=null; batchIssue.value=null; preparingBatch.value=false; error.value=''})
+watch(selected, () => {confirmedTemplate.value=false; allTemplates.value=false; batchSequence++; batchPreview.value=null; batchIssue.value=null; preparingBatch.value=false; error.value=''})
+watch([confirmedTemplate, allTemplates], () => {batchSequence++; batchPreview.value=null; batchIssue.value=null; preparingBatch.value=false; error.value=''})
 const coverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (target.value?.time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
@@ -60,10 +61,18 @@ async function previewBatch() {
 async function useSuggestedCandidate() {
   const replacement = batchIssue.value?.suggested_candidate
   if (!replacement || saving.value || loading.value || preparingBatch.value) return
+  const keepAllTemplates = allTemplates.value
   if (!data.value.candidates.some(r => r.id === replacement.id)) data.value.candidates.unshift(replacement)
   selected.value = replacement.id
   await nextTick()
   confirmedTemplate.value = true
+  allTemplates.value = keepAllTemplates
+  await nextTick()
+  await previewBatch()
+}
+async function previewAllTemplates() {
+  confirmedTemplate.value = true
+  allTemplates.value = true
   await nextTick()
   await previewBatch()
 }
@@ -136,10 +145,14 @@ Dtype: {{ JSON.stringify(r.npu_comparison_scope.dtypes) }}</pre></details>
               <h3>3. 确认关联</h3><p>新增可比 NPU 时间 {{ fmt(target.time_us) }} μs；分配 GPU 时间 {{ fmt(candidate.time_us) }} μs。预计类型覆盖率 {{ coverage }}，所选整组 GPU/NPU 比值 {{ target.time_us ? fmt(candidate.time_us/target.time_us) : '—' }}。TOTAL 不变。</p>
               <label>确认理由<textarea v-model="reason" maxlength="500" placeholder="例如：已核对两侧 index_add_ 调用，NPU 仅多一层内部调用" :disabled="saving" /></label>
               <label><input v-model="confirmedTemplate" type="checkbox" :disabled="saving"> 按人工确认模板扩展（允许两侧 shape / dtype / 参数数量不同）</label>
-              <p v-if="confirmedTemplate" class="notice">请核实当前一对代表相同工作。仅扩展与所选 NPU、GPU 各自元数据一致的重复调用；优先使用完整唯一的 CPU 对应，其余按调用顺序配对。选择位置不符时会提供对应候选。</p>
+              <template v-if="confirmedTemplate">
+                <label>扩展范围<select v-model="allTemplates" :disabled="saving" aria-label="批量扩展范围"><option :value="false">当前 shape/dtype 模板</option><option :value="true">同模块全部模板（跨 shape/dtype）</option></select></label>
+                <p v-if="allTemplates" class="notice">将同模块、同调用结构下的所有模板合并预览，可覆盖当前分析范围内的多个 step。请核实它们代表相同工作；优先使用完整唯一的 CPU 对应，其余要求两侧调用顺序和重复模板关系一致。</p>
+                <p v-else class="notice">请核实当前一对代表相同工作。仅扩展与所选 NPU、GPU 各自元数据一致的重复调用；优先使用完整唯一的 CPU 对应，其余按调用顺序配对。选择位置不符时会提供对应候选。</p>
+              </template>
               <div class="toolbar"><button :disabled="saving || !reason.trim()" @click="submit">{{ saving ? '提交中…' : '仅确认当前组' }}</button><button class="primary" :disabled="saving || preparingBatch" @click="previewBatch">{{ preparingBatch ? '正在生成预览…' : '预览同类批量关联' }}</button></div>
               <section v-if="batchIssue?.suggested_candidate" class="manual-candidate" aria-label="批量候选修正">
-                <p>当前 NPU 是同模板第 {{ batchIssue.position.npu }} / {{ batchIssue.position.total }} 次；所选 GPU 是第 {{ batchIssue.position.gpu }} 次。建议改选第 {{ batchIssue.position.paired_gpu }} 次：{{ batchIssue.suggested_candidate.cpu_name }} · CPU #{{ batchIssue.suggested_candidate.cpu_index }} · {{ batchIssue.suggested_candidate.count }} kernels。</p>
+                <p>当前 NPU 是{{ allTemplates ? '同模块' : '同模板' }}第 {{ batchIssue.position.npu }} / {{ batchIssue.position.total }} 次；所选 GPU 是第 {{ batchIssue.position.gpu }} 次。建议改选第 {{ batchIssue.position.paired_gpu }} 次：{{ batchIssue.suggested_candidate.cpu_name }} · CPU #{{ batchIssue.suggested_candidate.cpu_index }} · {{ batchIssue.suggested_candidate.count }} kernels。</p>
                 <button class="primary" :disabled="saving || preparingBatch" @click="useSuggestedCandidate">改选对应 GPU 调用并重新预览</button>
               </section>
               <details v-if="batchIssue?.conflicts?.length"><summary>查看 CPU 对齐冲突（{{ batchIssue.conflicts.length }} / {{ batchIssue.conflict_count }}）</summary><p v-for="r in batchIssue.conflicts" :key="r.npu_cpu_index">第 {{ r.npu_position }} 对：NPU CPU #{{ r.npu_cpu_index }}，顺序候选 GPU CPU #{{ r.ordered_gpu_cpu_index }}；已有 CPU 候选 {{ r.aligned_candidate_ids.join('、') }}。</p></details>
@@ -152,6 +165,11 @@ Dtype: {{ JSON.stringify(r.npu_comparison_scope.dtypes) }}</pre></details>
                 <p v-if="batchPreview.comparison.npu_owner_cpu_index !== batchPreview.comparison.npu.cpu_index" class="notice">本次使用 NPU 外层 {{ batchPreview.comparison.npu.cpu_name }}（CPU #{{ batchPreview.comparison.npu.cpu_index }}）与 GPU 调用比较，原始 kernel owner 不变。</p>
                 <p v-if="batchPreview.basis_counts.manual_template_order" class="notice">其中 {{ batchPreview.basis_counts.manual_template_order }} 对依据完整元数据和各端调用顺序扩展，请确认它们属于同一组重复调用。</p>
                 <p v-if="batchPreview.mode==='confirmed_template'" class="notice">{{ batchPreview.pair_count }} 对按人工确认的两侧模板扩展，元数据差异：{{ batchPreview.comparison.different_fields.join('、') || '无' }}。此模式仅包含与当前选中一对各自元数据一致的调用。</p>
+                <p v-if="batchPreview.mode==='confirmed_family'" class="notice">本次包含 {{ batchPreview.template_count }} 种 NPU/GPU 模板组合，共 {{ batchPreview.pair_count }} 对调用。请核对下方模板汇总后一次确认。</p>
+                <p v-if="batchPreview.mode==='confirmed_template' && batchPreview.scope_target_count>batchPreview.pair_count && batchPreview.scope_candidate_count>batchPreview.pair_count" class="notice">当前只纳入一种模板；其他 shape/dtype 也可合并预览。<button :disabled="saving || preparingBatch" @click="previewAllTemplates">扩展到同模块全部模板</button></p>
+                <details v-if="batchPreview.mode==='confirmed_family'"><summary>查看全部模板汇总（{{ batchPreview.templates.length }} / {{ batchPreview.template_count }}）</summary><div class="table-scroll"><table><thead><tr><th>NPU shape / dtype</th><th>GPU shape / dtype</th><th>调用对数</th></tr></thead><tbody><tr v-for="(t,i) in batchPreview.templates" :key="i"><td><pre>{{ JSON.stringify(t.npu.shapes) }}
+{{ JSON.stringify(t.npu.dtypes) }}</pre></td><td><pre>{{ JSON.stringify(t.gpu.shapes) }}
+{{ JSON.stringify(t.gpu.dtypes) }}</pre></td><td>{{ t.pair_count }}</td></tr></tbody></table></div></details>
                 <details><summary>本次使用的两侧 CPU 元数据</summary><pre>NPU {{ batchPreview.comparison.npu.cpu_name }} · CPU #{{ batchPreview.comparison.npu.cpu_index }}
 Shape: {{ JSON.stringify(batchPreview.comparison.npu.shapes) }}
 Dtype: {{ JSON.stringify(batchPreview.comparison.npu.dtypes) }}

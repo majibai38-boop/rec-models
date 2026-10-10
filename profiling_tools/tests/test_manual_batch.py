@@ -20,7 +20,66 @@ def repeated_catalog(count=260, outer_shape='[[4],[]]', aligned=True, inner_meta
     return catalog(gpu, npu, matches, [mapping(i, gpu_indices=()) for i in range(count)])
 
 
+def multiple_template_catalog(aligned=False):
+    c = repeated_catalog(260, outer_shape='[[4],[],[4]]', aligned=aligned)
+    for i, (t, g) in enumerate(zip(c['targets'], c['candidates'])):
+        size = 4 + i % 26
+        t['comparison_scopes'][1]['shapes'] = [[size], [], [size]]
+        g['shapes'] = [[size], []]
+    return c
+
+
 class ManualBatchTest(unittest.TestCase):
+    def test_all_templates_expands_26_templates_times_10_repetitions_once(self):
+        for aligned in (False, True):
+            c = multiple_template_catalog(aligned)
+            before = copy.deepcopy(c)
+            single = batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_template')
+            self.assertEqual(single['scope_target_count'], 260)
+            self.assertEqual(single['pair_count'], 10)
+            plan = batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_family')
+            self.assertEqual(plan['pair_count'], 260)
+            self.assertEqual(plan['template_count'], 26)
+            self.assertEqual([t['pair_count'] for t in plan['templates']], [10] * 26)
+            basis = 'manual_confirmed_family_cpu_scope' if aligned else 'manual_confirmed_family_order'
+            self.assertEqual(plan['basis_counts'], {basis: 260})
+            self.assertTrue(all(p['npu_indices'] == p['gpu_indices'] for p in plan['pairs']))
+            self.assertEqual(len({i for p in plan['pairs'] for i in p['gpu_indices']}), 260)
+            self.assertEqual(c, before)
+
+    def test_all_templates_corrects_seed_using_entire_family_position(self):
+        c = multiple_template_catalog()
+        with self.assertRaises(BatchConflict) as caught:
+            batch_plan(c['targets'], c['candidates'], 'npu:179', 'op:0', 'confirmed_family')
+        detail = caught.exception.detail
+        self.assertEqual(detail['code'], 'seed_pair_mismatch')
+        self.assertEqual(detail['position']['total'], 260)
+        self.assertEqual(detail['suggested_candidate']['id'], 'op:179')
+        plan = batch_plan(c['targets'], c['candidates'], 'npu:179', 'op:179', 'confirmed_family')
+        self.assertEqual(plan['pair_count'], 260)
+
+    def test_all_templates_rejects_drifting_order_but_respects_complete_cpu_bijection(self):
+        c = multiple_template_catalog()
+        c['candidates'][26]['shapes'] = [[1000], []]
+        with self.assertRaises(BatchConflict) as caught:
+            batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:0', 'confirmed_family')
+        self.assertEqual(caught.exception.detail['code'], 'template_alignment_conflict')
+        c = multiple_template_catalog(aligned=True)
+        c['targets'][0]['cpu_aligned'] = ['op:1']
+        c['targets'][1]['cpu_aligned'] = ['op:0']
+        plan = batch_plan(c['targets'], c['candidates'], 'npu:0', 'op:1', 'confirmed_family')
+        self.assertEqual(plan['pair_count'], 260)
+        self.assertEqual(plan['pairs'][0]['gpu_indices'], [1])
+
+    def test_all_templates_can_finish_remaining_calls_after_one_template_was_linked(self):
+        c = multiple_template_catalog()
+        targets = [t for i, t in enumerate(c['targets']) if i % 26 != 0]
+        candidates = [g for i, g in enumerate(c['candidates']) if i % 26 != 0]
+        plan = batch_plan(targets, candidates, 'npu:1', 'op:1', 'confirmed_family')
+        self.assertEqual(plan['pair_count'], 250)
+        self.assertEqual(plan['template_count'], 25)
+        self.assertTrue(all(p['npu_indices'] == p['gpu_indices'] for p in plan['pairs']))
+
     def test_260_aligned_calls_and_template_order(self):
         c = repeated_catalog()
         for aligned in (True, False):
@@ -161,8 +220,9 @@ class ManualBatchTest(unittest.TestCase):
             if case == 'weak': c['candidates'][1]['weak_owner'] = True
             if case == 'metadata': c['candidates'][1]['batch_context']['tensor_metadata_complete'] = False
             if case == 'overlap': c['candidates'][1]['indices'] = [0]
-            with self.subTest(case=case), self.assertRaises(ValueError):
-                batch_plan(c['targets'], c['candidates'], 'npu:0', candidate, 'confirmed_template')
+            for mode in ('confirmed_template', 'confirmed_family'):
+                with self.subTest(case=case, mode=mode), self.assertRaises(ValueError):
+                    batch_plan(c['targets'], c['candidates'], 'npu:0', candidate, mode)
 
     def test_ancestor_with_sibling_work_is_not_comparison_scope(self):
         gpu = profile('gpu', [op('aten::index_add_', 0)], [(0, 'index_kernel')])

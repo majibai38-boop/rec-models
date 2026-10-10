@@ -99,7 +99,7 @@ class ManualConfirmation(ManualSeed):
 
 
 class ManualBatchSeed(ManualSeed):
-    mode: Literal['strict', 'confirmed_template'] = 'strict'
+    mode: Literal['strict', 'confirmed_template', 'confirmed_family'] = 'strict'
 
 
 class ManualBatchConfirmation(ManualBatchSeed):
@@ -409,7 +409,8 @@ def create_app(settings=None):
     @app.post('/api/jobs/{job_id}/manual-batch/preview')
     def preview_manual_batch(job_id: str, body: ManualBatchSeed):
         job, _, plan, token = get_batch(job_id, body)
-        return {**plan, 'pairs': plan['pairs'][:20], 'attempt': job['attempt'], 'preview_token': token}
+        return {**plan, 'pairs': plan['pairs'][:20], 'templates': plan['templates'][:50],
+                'attempt': job['attempt'], 'preview_token': token}
 
     @app.post('/api/jobs/{job_id}/manual-batch', status_code=202)
     def confirm_manual_batch(job_id: str, body: ManualBatchConfirmation):

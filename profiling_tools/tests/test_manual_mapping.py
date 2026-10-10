@@ -13,13 +13,19 @@ from profiling_tools.tests.test_logical_calls import op, profile
 from profiling_tools.tests.test_scope_recovery import strong
 
 
-def nested_fixture(root, count=1, outer_extra=False):
+def nested_fixture(root, count=1, outer_extra=False, templates=1, steps=1):
     root = Path(root)
+    assert count % steps == 0
+    calls_per_step = count // steps
     for side, pid in [('gpu',1),('npu',3)]:
-        events = [complete('ProfilerStep#1','user_annotation',0,100*count,pid,pid),
-                  complete('nn.Module: IndexBlock_0','python_function',1,100*count-10,pid,pid)]
+        events = []
+        for step in range(steps):
+            start = 100 * calls_per_step * step
+            events.extend([complete(f'ProfilerStep#{step+1}','user_annotation',start,100*calls_per_step,pid,pid),
+                           complete('nn.Module: IndexBlock_0','python_function',start+1,100*calls_per_step-10,pid,pid)])
         for i in range(count):
-            args = {'External id':2*i+1,'Input Dims':[[4],[],[4],[4],[]],
+            size = 4 + i % templates
+            args = {'External id':2*i+1,'Input Dims':[[size],[],[size],[size],[]],
                     'Input type':['float','Scalar','long','float','Scalar']}
             if side == 'npu' and outer_extra:
                 args = {**args, 'Input Dims': [*args['Input Dims'], []],
@@ -34,8 +40,10 @@ def nested_fixture(root, count=1, outer_extra=False):
                                   {'External id':2*i+(2 if side=='npu' else 1),'stream':7}))
         (root/f'{side}.json').write_text(json.dumps({'traceEvents':events}),encoding='utf-8')
     (root/'details.csv').write_text('Name,Type,Duration(us),Start Time(us),Stream ID,Device_id,Step ID\n'+
-                                  ''.join(f'index_kernel,IndexAdd,4,{100*i+30},7,0,1\n' for i in range(count)),encoding='utf-8')
-    return CompareConfig(str(root/'gpu.json'),str(root/'npu.json'),str(root/'details.csv'),str(root/'out'),gpu_step='1',npu_step='1')
+                                  ''.join(f'index_kernel,IndexAdd,4,{100*i+30},7,0,{i//calls_per_step+1}\n' for i in range(count)),encoding='utf-8')
+    selected_step = '' if steps > 1 else '1'
+    return CompareConfig(str(root/'gpu.json'),str(root/'npu.json'),str(root/'details.csv'),str(root/'out'),
+                         gpu_step=selected_step,npu_step=selected_step,all_steps=steps > 1)
 
 
 class ManualMappingTest(unittest.TestCase):
