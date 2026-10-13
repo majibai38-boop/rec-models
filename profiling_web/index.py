@@ -48,8 +48,12 @@ def build_index(reports, destination):
                 duration REAL, search TEXT, payload TEXT, PRIMARY KEY(kind,id));
             CREATE INDEX manual_type ON manual_groups(kind,op_type,device_id,core_type);
         """)
+        pipeline_path = reports / 'npu_pipeline_analysis.json'
+        pipeline_types = {(r['op_type'], r['device_id'], r['core_type']): r
+                          for r in read_json(pipeline_path)['types']} if pipeline_path.is_file() else {}
         for row in csv_rows(reports / "npu_gpu_op_statistic.csv"):
             record = _statistic_record(row)
+            record['pipeline'] = pipeline_types.get((record['op_type'], record['device_id'], record['core_type']))
             record.update({"fused_npu_type": row.get("FUSED_OP_NPU_TYPE", ""), "fused_gpu_type": row.get("FUSED_OP_GPU_TYPE", ""),
                            "conclusion": row.get("排查结论", ""), "advice": row.get("排查建议", ""),
                            "whole_status": row.get("Whole Comparison Status", ""),

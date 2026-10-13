@@ -4,6 +4,7 @@ from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+from profiling_tools.pipeline_analysis import summarize
 
 
 def percentile(values, p):
@@ -23,6 +24,8 @@ def group_summary(units):
     cg = sum(u['gpu_time_us'] for u in pairs)
     nvalues, gvalues = [u['npu_time_us'] for u in pairs], [u['gpu_time_us'] for u in pairs]
     return {**{k: first[k] for k in ('group_id', 'op_type', 'device_id', 'core_type', 'granularity')},
+            'pipeline': summarize(k for u in units for k in u['npu_kernels'])
+                        if any('pipeline' in k for u in units for k in u['npu_kernels']) else None,
             'npu_metadata': [{k: v for k, v in r.items() if k in ('name', 'source', 'input_shapes', 'input_dtypes', 'output_shapes', 'output_dtypes')} for r in first['npu_kernels']],
             'gpu_names': [r['name'] for r in first['gpu_kernels']],
             'npu_cpu': first['npu_scopes'] or first['npu_owners'],
@@ -100,4 +103,14 @@ def query_details(path, *, op_type, device_id, core_type, group_id='', unit_id='
                 sum(json_extract(payload,'$.comparable_gpu_time_us')),sum(json_extract(payload,'$.count')),
                 sum(json_extract(payload,'$.comparable_count')) FROM {table} WHERE {where}''', params).fetchone()
             result['summary'] = dict(zip(('npu_time_us', 'comparable_npu_time_us', 'comparable_gpu_time_us', 'count', 'comparable_count'), sums))
+            categories = db.execute(f'''SELECT json_extract(j.value,'$.category'),
+                json_extract(j.value,'$.label'),sum(json_extract(j.value,'$.count')),
+                sum(json_extract(j.value,'$.time_us'))
+                FROM (SELECT payload FROM {table} WHERE {where}) AS filtered,
+                json_each(filtered.payload,'$.pipeline.categories') AS j
+                GROUP BY json_extract(j.value,'$.category')''', params).fetchall()
+            total = sum(r[3] for r in categories)
+            result['summary']['pipeline'] = {'count': sum(r[2] for r in categories), 'time_us': total,
+                'categories': [dict(category=r[0], label=r[1], count=r[2], time_us=r[3],
+                                    time_pct=100*r[3]/total if total else None) for r in categories]} if categories else None
         return result

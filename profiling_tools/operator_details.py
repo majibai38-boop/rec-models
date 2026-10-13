@@ -9,6 +9,7 @@ import json
 
 from .call_metadata import shapes, dtypes
 from .parser import get_arg
+from .pipeline_analysis import classify, summarize
 
 
 def encoded(value):
@@ -54,6 +55,7 @@ def kernel_metadata(profile, index, memory=False):
             'owner_index': k.owner_op_index, 'stream': k.stream_id,
             'pid': k.event.pid, 'device': d.device_id if d else str(k.event.args.get('device', '')),
             'source': 'kernel_details' if d else 'not_collected',
+            **({'pipeline': classify(d)} if profile.side == 'npu' else {}),
             **(tensor_metadata(d.input_shapes, d.input_dtypes, d.output_shapes, d.output_dtypes)
                if d else tensor_metadata())}
 
@@ -95,6 +97,7 @@ def build_operator_details(gpu, npu, matches, rows):
         ntime, gtime = sum(k['time_us'] for k in nk), sum(k['time_us'] for k in gk)
         status = '共享 GPU 活动，不能独立归因' if shared else '可比较' if comparable else '未独立对齐'
         unit = {'id': 'unit:' + str(ni[0]), 'op_type': op_type, 'device_id': device, 'core_type': core,
+                'pipeline': summarize(nk),
                 'npu_kernels': nk, 'gpu_kernels': gk, 'npu_owners': nowners, 'gpu_owners': gowners,
                 'npu_scopes': nscope, 'gpu_scopes': gscope,
                 'npu_time_us': ntime, 'gpu_time_us': gtime if gk else None,

@@ -29,6 +29,34 @@ def case():
 
 
 class OperatorDetailsTest(unittest.TestCase):
+    def test_pipeline_report_index_and_full_filter_partition(self):
+        from profiling_tools.tests.test_pipeline_analysis import detail
+        from profiling_web.index import query_index
+        g,n,m,r = case()
+        for i,k in enumerate(n.kernels):
+            k.detail.raw = detail(aiv_vec_ratio=.9 if i==0 else .2).raw
+            k.detail.core_type = 'AI_VECTOR_CORE'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_reports(str(root/'reports'),g,n,m,[],[],{},diagnostic_coverage_threshold=0)
+            source = root/'reports'/'npu_pipeline_analysis.json'
+            report = json.loads(source.read_text(encoding='utf-8'))
+            self.assertEqual(report['summary']['count'],4)
+            self.assertEqual(report['summary']['time_us'],10)
+            self.assertTrue((root/'reports'/'npu_pipeline_kernels.csv').is_file())
+            build_index(root/'reports',root/'index.sqlite')
+            result = query_details(root/'index.sqlite',op_type='Add',device_id='',core_type='AI_VECTOR_CORE',limit=1)
+            self.assertTrue(result['has_more'])
+            self.assertEqual(result['summary']['pipeline']['count'],4)
+            self.assertEqual(result['summary']['pipeline']['time_us'],10)
+            self.assertEqual(sum(c['time_pct'] for c in result['summary']['pipeline']['categories']),100)
+            type_rows = query_index(root/'index.sqlite')['items']
+            row = next(r for r in type_rows if r['row_kind']=='npu_type')
+            self.assertEqual(row['pipeline']['time_us'],10)
+            group = result['items'][0]
+            filtered = query_details(root/'index.sqlite',op_type='Add',device_id='',core_type='AI_VECTOR_CORE',group_id=group['group_id'])
+            self.assertEqual(filtered['summary']['pipeline']['time_us'],group['npu_time_us'])
+
     def test_metadata_outputs_and_unknown_gpu(self):
         g,n,m,r = case()
         g.ops[0].event.args.update({'Output Shapes': [[4]], 'Output Types': ['float']})

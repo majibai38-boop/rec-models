@@ -2280,7 +2280,20 @@ def write_reports(
         },
     }
     from .operator_details import build_operator_details
+    from .pipeline_analysis import build_pipeline_report
     from .provenance import write_json
+    pipeline_report = build_pipeline_report(npu, npu_kernel_mapping_rows)
+    write_json(output / 'npu_pipeline_analysis.json', pipeline_report)
+    pipeline_rows = [dict(index=k['index'], name=k['name'], op_type=k['op_type'], device_id=k['device_id'],
+                          core_type=k['core_type'], time_us=k['time_us'], category=k['pipeline']['category'],
+                          conclusion=k['pipeline']['label'], reason=k['pipeline']['reason'],
+                          confidence=k['pipeline']['confidence'], next_check=k['pipeline']['next_check'])
+                     for k in pipeline_report['kernels']]
+    _write_csv(output / 'npu_pipeline_kernels.csv', pipeline_rows,
+               ['index', 'name', 'op_type', 'device_id', 'core_type', 'time_us', 'category',
+                'conclusion', 'reason', 'confidence', 'next_check'])
+    summary['reports'].extend(['npu_pipeline_analysis.json', 'npu_pipeline_kernels.csv'])
+    summary['pipeline_analysis'] = pipeline_report['summary']
     write_json(output / 'operator_details.json', build_operator_details(gpu, npu, matches, npu_kernel_mapping_rows))
     summary['reports'].append('operator_details.json')
     if manual_enabled:

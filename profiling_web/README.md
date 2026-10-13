@@ -202,4 +202,16 @@ profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1
 
 已验证：核心 139 项测试（包括桌面 Excel 所要求的 OOXML 元素顺序）、Web 24 项测试、前端状态工具 4 项测试及前端生产构建。浏览器已验证本机免令牌访问、修改任务名、文件选择上传、预检查、指定 Step 分析、Excel 下载、页面内保存视图，以及真实报告的类型→整体→调用证据下钻和刷新恢复。标准 `ProfilerStep#1` 会规范为 CSV 使用的 Step `1`，自定义 Step 名称保持原样。此前真实 demo1 step 15 HTTP 回归结果保留原引擎口径（NPU 13987.133 μs、GPU 14242.9 μs）。
 
+### NPU 流水瓶颈初筛
+
+新分析会在「类型对比」增加流水初筛列；点击「详细对比」可查看当前筛选范围、shape 比较组、逐次调用的分类耗时分布，在「双侧详情」展开 NPU kernel 的流水初筛，查看 AIC/AIV 原始指标、判断依据和下一步检查。旧任务需「复用输入，新建分析」，旧结果不会回写。
+
+逐 kernel 分类为计算主导、搬运主导、Scalar/Control 主导、多流水/混合、No Bound 候选或 Unknown。先判每个 kernel，再按其 Duration 求和统计类别占比；分母包含 Unknown，并非各条流水时间之和，也不是墙钟时间。所有 NPU 类型均参与，独立于 GPU 是否对齐和覆盖率诊断阈值。
+
+规则 `pipe_utilization_v1`：周期占比超过 80% 才视为强活跃，恰好 80% 属于 No Bound 候选范围；跨类别前两项差距不足 15 个百分点，或两类均超过 80%，保留混合候选。这是启发式初筛，不表示 HBM 带宽或算力已饱和。AIC/AIV 独立检查，Cube 输出检查 Fixpipe/MTE3；必需字段缺失、N/A、非有限值、越界或适用字段全零均保留 Unknown。数值使用 0–1 比例，带 `%` 的文本显式换算，不猜测无单位的 0–100 数值。硬件/指令模式的差异仍需单算子工具核验。
+
+下载件：`npu_pipeline_kernels.csv` 提供逐 kernel 结论及排查建议；`npu_pipeline_analysis.json` 包含原始证据、独立 AIC/AIV 结论、类型分布及纯 NPU 类型＋shape＋dtype＋format 分组。网页的 shape 比较组还保留原有 CPU 模块和 GPU 组成约束。仅有 PipeUtilization 不生成 Roofline 结论，确认瓶颈需要真实算量、分层搬运量及对应硬件峰值。
+
+参考：[RmsNormQuant 优化案例](https://cann.csdn.net/6a15a2e910ee7a33f2755b2e.html)、[官方 No Bound 筛查](https://github.com/Ascend/msprof-analyze/blob/master/msprof_analyze/advisor/analyzer/computation/bound/operator_bound_checker.py)、[官方 Roofline 分析](https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_user_guide.md#roofline-bottleneck-analysis-chart)。本实现补充双侧核域、Fixpipe 和缺失值检查，不等同于官方检测器的逐项复刻。
+
 后续扩展边界：暂不支持断点上传、多用户隔离、跨任务缓存、跨轮对比和完整时间线查看。CLI/Skill 不依赖 Web 组件，原有调用方式不变。
