@@ -85,6 +85,20 @@ class WebTest(unittest.TestCase):
             records = self.client.get(f"/api/jobs/{job_id}/results", params={"kind": "mappings", "op_type": "Add"}).json()
             self.assertEqual(records["total"], 1)
         export = self.client.get(f"/api/jobs/{job_id}/artifacts/npu_gpu_op_statistic.xlsx")
+        params = {'op_type':'Add', 'device_id':'0', 'core_type':'AI_CORE', 'attempt':job['attempt']}
+        # Use the actual type identity from the generated statistics.
+        params.update({k:result['items'][0][k] for k in ('op_type','device_id','core_type')})
+        detail = self.client.get(f'/api/jobs/{job_id}/operator-details',params=params)
+        self.assertEqual(detail.status_code,200,detail.text)
+        self.assertTrue(detail.json()['supported'])
+        self.assertEqual(detail.json()['summary']['count'],1)
+        group = detail.json()['items'][0]
+        unit = self.client.get(f'/api/jobs/{job_id}/operator-details',params={**params,'view':'units','group_id':group['group_id']}).json()['items'][0]
+        self.assertEqual(unit['ratio'],.5)
+        self.assertEqual(unit['gpu_kernels'][0]['input_shapes'],[])
+        self.assertEqual(self.client.get(f'/api/jobs/{job_id}/operator-details',params={**params,'attempt':'old'}).status_code,409)
+        self.assertEqual(self.client.get(f'/api/jobs/{job_id}/operator-details',params={**params,'limit':201}).status_code,422)
+        self.assertEqual(self.client.get(f'/api/jobs/{job_id}/operator-details',params={**params,'sort':'SQL'}).status_code,422)
         self.assertEqual(export.status_code, 200)
         self.assertEqual(export.content[:2], b"PK")
         self.assertIn("attachment", export.headers["content-disposition"])

@@ -14,6 +14,9 @@ const basisLabel = (basis) => ({aligned_cpu_scope:'已有 CPU 对齐', manual_te
 let batchSequence = 0
 let sequence = 0, previousFocus
 const fmt = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 3 })
+const callLabel = (r) => r?.call_position ? `同类第 ${r.call_position.index}/${r.call_position.total} 次` : '调用序号未知'
+const templateLabel = (r) => r?.template_position ? `当前 shape/dtype 第 ${r.template_position.index}/${r.template_position.total} 次` : '模板序号未知'
+const positionLabel = (p) => p ? `${p.index}/${p.total}` : '未知'
 const candidate = computed(() => data.value?.candidates.find(r => r.id === selected.value))
 const target = computed(() => data.value?.target)
 const batchCoverage = computed(() => props.type.npu_total_time_us > 0
@@ -116,11 +119,13 @@ onBeforeUnmount(() => {sequence++; batchSequence++; document.removeEventListener
         <template v-else>
           <h3>1. 选择未可比的 NPU 调用</h3>
           <select v-if="data.targets.length" v-model="targetId" :disabled="saving" aria-label="NPU 调用" @change="gpuOffset=0;load()">
-            <option v-for="r in data.targets" :key="r.id" :value="r.id">{{ r.cpu_name }} · CPU #{{ r.cpu_index ?? '未知' }} · {{ r.count }} kernels · {{ fmt(r.time_us) }} μs</option>
+            <option v-for="r in data.targets" :key="r.id" :value="r.id">{{ r.cpu_name }} · {{ callLabel(r) }} · CPU #{{ r.cpu_index ?? '未知' }} · {{ r.count }} kernels · {{ fmt(r.time_us) }} μs</option>
           </select>
           <p v-else>该类型没有可补充的 NPU kernel。</p>
           <div v-if="data.target_total > 20" class="pagination"><span>共 {{ data.target_total }} 组</span><button :disabled="saving || offset===0" @click="offset-=20;gpuOffset=0;load(true)">上一页 NPU</button><button :disabled="saving || offset+20>=data.target_total" @click="offset+=20;gpuOffset=0;load(true)">下一页 NPU</button></div>
           <div v-if="target" class="manual-target">
+            <p class="muted small">调用序号从 1 开始，按同模块、同调用结构、同线程/设备及 kernel 组成的待关联调用排序；搜索、翻页不改变序号。完成关联后的新结果会按剩余调用重新编号。序号相同仅供定位，不代表已对齐。</p>
+            <p>NPU {{ callLabel(target) }} · {{ templateLabel(target) }}</p>
             <p>NPU #{{ target.indices.join(', ') }} · 模块 {{ target.module || '未知' }} · {{ fmt(target.time_us) }} μs</p>
             <details><summary>NPU kernel 与元数据</summary><pre>{{ target.names.join('\n') }}
 Shape: {{ JSON.stringify(target.shapes) }}
@@ -129,7 +134,9 @@ Dtype: {{ JSON.stringify(target.dtypes) }}</pre></details>
             <form class="toolbar" @submit.prevent="gpuOffset=0;load()"><input v-model="search" maxlength="200" placeholder="搜索其他未映射 GPU kernel / CPU op / 模块" aria-label="搜索 GPU 候选" :disabled="saving"><button :disabled="saving">搜索</button><button type="button" :disabled="saving" @click="search='';gpuOffset=0;load()">前三个推荐</button></form>
             <p class="muted small">{{ search ? '搜索结果' : '证据最充分的前三个候选' }}；推荐排序不是匹配概率，耗时接近不作为依据。</p>
             <article v-for="r in data.candidates" :key="r.id" class="manual-candidate" :class="{chosen:selected===r.id}">
-              <label><input v-model="selected" type="radio" name="gpu-candidate" :value="r.id" :disabled="saving"> <strong>{{ r.recommendation }} · {{ r.cpu_name }}</strong></label>
+              <label><input v-model="selected" type="radio" name="gpu-candidate" :value="r.id" :disabled="saving"> <strong>{{ r.recommendation }} · {{ r.cpu_name }} · {{ callLabel(r) }}</strong></label>
+              <p>{{ templateLabel(r) }} · CPU #{{ r.cpu_index ?? '未知' }}</p>
+              <p v-if="r.npu_comparison_scope">对应比较范围：NPU {{ r.npu_comparison_scope.cpu_name }} · {{ callLabel(r.npu_comparison_scope) }} · {{ templateLabel(r.npu_comparison_scope) }}</p>
               <p>GPU #{{ r.indices.join(', ') }} · {{ r.count }} kernels · {{ fmt(r.time_us) }} μs · {{ r.module || '模块未知' }}</p>
               <p>{{ r.reasons.join('；') }}</p><p v-if="r.warnings.length" class="notice">{{ r.warnings.join('；') }}，请人工核实。</p>
               <details><summary>kernel 名称与元数据</summary><pre>{{ r.names.join('\n') }}
@@ -178,7 +185,7 @@ Shape: {{ JSON.stringify(batchPreview.comparison.gpu.shapes) }}
 Dtype: {{ JSON.stringify(batchPreview.comparison.gpu.dtypes) }}</pre></details>
                 <p v-if="batchPreview.excluded_count">同模板有 {{ batchPreview.excluded_count }} 组未纳入：<span v-for="(n,why) in batchPreview.excluded_reasons" :key="why">{{ why }}（{{ n }} 组）；</span></p>
                 <p v-if="batchPreview.other_target_count" class="muted small">该类型另有 {{ batchPreview.other_target_count }} 组属于其他模块或调用结构，本次不包含。</p>
-                <details><summary>查看配对样本（{{ batchPreview.pairs.length }} / {{ batchPreview.pair_count }}）</summary><div class="table-scroll"><table><thead><tr><th>NPU owner CPU # / kernels</th><th>GPU CPU # / kernels</th><th>依据</th></tr></thead><tbody><tr v-for="p in batchPreview.pairs" :key="p.target_id"><td>{{ p.npu_cpu_index }} / {{ p.npu_indices.length }}</td><td>{{ p.gpu_cpu_index }} / {{ p.gpu_indices.length }}</td><td>{{ basisLabel(p.basis) }}</td></tr></tbody></table></div></details>
+                <details><summary>查看配对样本（{{ batchPreview.pairs.length }} / {{ batchPreview.pair_count }}）</summary><div class="table-scroll"><table><thead><tr><th>NPU 同类 / 模板序号</th><th>GPU 同类 / 模板序号</th><th>NPU owner CPU # / kernels</th><th>GPU CPU # / kernels</th><th>依据</th></tr></thead><tbody><tr v-for="p in batchPreview.pairs" :key="p.target_id"><td>{{ positionLabel(p.npu_call_position) }} · {{ positionLabel(p.npu_template_position) }}</td><td>{{ positionLabel(p.gpu_call_position) }} · {{ positionLabel(p.gpu_template_position) }}</td><td>{{ p.npu_cpu_index }} / {{ p.npu_indices.length }}</td><td>{{ p.gpu_cpu_index }} / {{ p.gpu_indices.length }}</td><td>{{ basisLabel(p.basis) }}</td></tr></tbody></table></div></details>
                 <button class="primary" :disabled="saving || !reason.trim()" @click="submitBatch">{{ saving ? '提交中…' : `一次确认 ${batchPreview.pair_count} 对并更新报告` }}</button>
               </section>
             </template>

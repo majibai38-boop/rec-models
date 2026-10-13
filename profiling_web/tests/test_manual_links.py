@@ -136,6 +136,14 @@ class ManualWebTest(unittest.TestCase):
             self.assertEqual(rejected.status_code, 422, rejected.text)
         seed['mode'] = mode
         if mode == 'confirmed_family':
+            # Number the entire available population, not the result page/search.
+            panel = self.panel(ident, target_id='npu:100', offset=20, search='index_kernel', gpu_offset=20)
+            self.assertEqual(panel['target']['call_position'], {'index': 101, 'total': 260})
+            for candidate in panel['candidates']:
+                index = int(candidate['id'].split(':')[1])
+                self.assertEqual(candidate['call_position'], {'index': index + 1, 'total': 260})
+                self.assertEqual(candidate['template_position'], {'index': index // 26 + 1, 'total': 10})
+                self.assertEqual(candidate['npu_comparison_scope']['call_position'], {'index': 101, 'total': 260})
             single = self.client.post(f'/api/jobs/{ident}/manual-batch/preview',
                                       json={**seed, 'mode': 'confirmed_template'})
             self.assertEqual(single.status_code, 200, single.text)
@@ -152,6 +160,7 @@ class ManualWebTest(unittest.TestCase):
             self.assertEqual(detail['position']['npu'], 180)
             self.assertEqual(detail['position']['gpu'], 1)
             self.assertEqual(detail['suggested_candidate']['id'], 'op:179')
+            self.assertEqual(detail['suggested_candidate']['call_position'], {'index': 180, 'total': 260})
             self.assertEqual(self.store.get(ident)['attempt'], before['attempt'])
             seed = {**mismatched, 'candidate_id': detail['suggested_candidate']['id']}
             payload.update(target_id=seed['target_id'], candidate_id=seed['candidate_id'])
@@ -166,6 +175,10 @@ class ManualWebTest(unittest.TestCase):
         if mode == 'confirmed_family':
             self.assertEqual(preview['template_count'], 26)
             self.assertEqual([t['pair_count'] for t in preview['templates']], [10] * 26)
+            for index, pair in enumerate(preview['pairs']):
+                for side in ('npu', 'gpu'):
+                    self.assertEqual(pair[side + '_call_position'], {'index': index + 1, 'total': 260})
+                    self.assertEqual(pair[side + '_template_position'], {'index': 1, 'total': 10})
         if mode == 'confirmed_template':
             self.assertEqual(preview['selection_position']['npu'], 180)
             self.assertEqual(preview['selection_position']['gpu'], 180)

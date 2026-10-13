@@ -43,8 +43,23 @@ profiling_web/.venv/Scripts/python -m profiling_web all --port 8000 --data-dir p
 1. 新建任务，上传 GPU trace JSON、NPU trace JSON 和 NPU `kernel_details.csv`。这版要求三者齐全，不接受压缩包或服务器任意路径。
 2. 预检查后明确选择两端 CPU PID、稳定 step，或显式勾选完整采集。相同 step 编号不保证输入、精度和工作量等价。
 3. 提交分析。页面显示队列/阶段状态，刷新不丢任务；可取消运行。
-4. 在五个页签依次查看类型对比、整体对比、覆盖率诊断、调用明细和耗时分布，默认打开类型对比。类型表可跳转关联的整体分组，再下钻到完整调用事件；大结果按页查询。
+4. 在六个页签查看类型对比、算子详情、整体对比、覆盖率诊断、调用明细和耗时分布，默认打开类型对比。类型表可跳转 shape/dtype 详情或关联的整体分组，再下钻到事件；大结果按页查询。
 5. 下载多页签 Excel 或其他报告。删除任务需要确认，将永久删除输入、所有运行结果和日志，不可恢复。
+
+### 算子详情：shape / dtype 与性能
+
+在「类型对比」的 NPU 类型行点击「详细对比」，自动携带类型、设备、Core Type 和结果版本。返回类型对比保留原筛选、排序和页码；详情分组、逐次页码、输入位置和选中单元也保存在 URL 中。结果版本变化后旧详情链接拒绝混用事件编号，重新从类型表打开即可。
+
+- 默认按完整元数据、模块/CPU 路径及两侧 kernel 组成分组，不把相同元素数但不同维度的 shape 合并。缺失元数据保留未知，分组不是新的对齐证据。
+- 表格展示 NPU kernel 输入/输出、GPU CPU op 输入、可比/全部比较单元数、可比均值、GPU/NPU、NPU 总时间和独立可比时间覆盖率。「详细模式」补充 P50/P95。可搜索 shape、dtype、模块和 kernel，并导出全部筛选分组 CSV。
+- 条形图展示 NPU 总耗时最高前 15 组的两侧可比均值。散点图取前 200 组中有有效输入及比值的记录，横轴为明确选择的 `NPU kernel[0].input[i]` 元素数，纵轴为 GPU/NPU，气泡大小为 NPU 总时间；不将多个输入相加，不把 TensorList、未知维度或 scalar 参数当作张量大小。图旁标明截取/排除数量。
+- 点击分组或图形展开逐次记录，再点「双侧详情」查看 CPU 比较 scope、真实 kernel owner、每个设备事件及输入输出来源。类型单元和模板序号基于该结果版本完整集合，搜索/翻页不会重编号；比较单元不等同于 CPU 调用数。
+- 同一 GPU 活动集合只在同类型执行组内计一次；跨类型或部分重叠的共享 GPU 活动不输出独立比值，转「整体比较」检查。未映射 GPU 耗时为未知而不是零。汇总比值是可比 GPU 时间和 / 同批可比 NPU 时间和，不是单次比值的平均。此页独立可比口径可能比类型表更保守，不改变已有 TOTAL/覆盖率或映射规则。
+- NPU kernel 元数据来自 `kernel_details.csv`；GPU CPU 输入来自 trace，CPU 输出只在 trace 明确记录时展示。CPU 元数据不冒充 GPU kernel 实参，GPU kernel 的未知输出不会从 NPU 复制。人工确认标记为「人工确认（非自动验证）」。
+
+完整详情由分析阶段生成 `operator_details.json`，与诊断阈值无关；Worker 构建只读 SQLite 分组及事件索引，页面 GET 不解析 trace。旧任务缺少索引时可继续使用原逐 kernel 映射和诊断；完整新视图需「复用输入，新建分析」，不会自动重跑或覆盖旧结果。
+
+只读 API：`GET /api/jobs/{job_id}/operator-details?op_type=Add&device_id=0&core_type=AI_CORE`。可选 `view=groups|units`、`group_id`、`unit_id`、`search`、`sort=npu_time|ratio|position`、`offset`、`limit`（最大 200）及 `attempt`；版本不一致返回 409，旧索引返回 `supported:false`。
 
 ### Cube / Vector 总览
 
@@ -64,6 +79,8 @@ GPU 类 Cube/Vector 仅参考已对齐的 NPU 分类，包括人工确认关联�
 4. 点击「人工关联 ×N」查看理由、撤销关联；撤销同样会重新生成报告。
 
 重复调用可批量确认：选好一对 NPU/GPU 候选后，点击「预览同类批量关联」。系统以这一对为模板，在当前 NPU 类型、模块、CPU 调用结构和线程范围内扩展；GPU 候选还限制设备及 kernel 组成。优先使用唯一的已有 CPU 对齐；没有对齐时，仅在两端完整 shape/dtype 分组数量相等、调用顺序与已选配对和已有对齐一致时，提供「人工模板 + 调用顺序」配对。缺失元数据、弱 owner、数量冲突和重叠候选会排除并显示原因。旧报告缺少批量上下文时，需要复用输入重新分析。
+
+补充关联中会同时显示「同类第 101/260 次」和「当前 shape/dtype 第 4/10 次」，用于定位重复调用。序号从 1 开始，按各端同模块、同 CPU 调用结构、同线程/设备及 kernel 组成的待关联调用时间排序，搜索和分页不会重编号。NPU 采用外层 CPU scope 比较时，GPU 候选下也显示该 NPU 比较范围的序号。批量配对样本同时展示两侧序号，原 CPU/kernel 事件编号继续保留；序号相同不代表已建立对应。生成新结果后按剩余可关联调用重新编号，旧报告若缺少时间上下文则显示未知。本功能从已有索引生成序号，不需要重新解析 trace。
 
 NPU 通过内层实现下发 kernel 时，优先使用与所选 GPU CPU op 同名、且恰好覆盖当前 NPU kernel 组的最近外层调用。例如 NPU `aten::index_add_ → aten::index_add → IndexAdd` 对 GPU `aten::index_add_ → kernel`，使用两侧 `index_add_` 的元数据；内层多参数或缺失元数据不会误阻止批量扩展。含其他类型或兄弟调用 kernel 的祖先不用于这种替换。候选与预览中展示比较使用的 CPU scope，真实 kernel owner 保留。
 

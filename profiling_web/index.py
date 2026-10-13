@@ -7,6 +7,7 @@ import sqlite3
 import heapq
 
 from profiling_tools.result_api import _statistic_record, read_json, summarize_results
+from .manual_positions import with_call_positions, comparison_positions
 
 
 def csv_rows(path):
@@ -101,6 +102,8 @@ def build_index(reports, destination):
                                (kind, row['id'], row.get('op_type',''), row.get('device_id',''), row.get('core_type',''),
                                 row['time_us'], ' '.join([row['cpu_name'],row['module'],*row['names']]).lower(),
                                 json.dumps(row, ensure_ascii=False)))
+        from .operator_details import build_details_index
+        build_details_index(db, reports / 'operator_details.json')
         db.commit()
 
 
@@ -115,14 +118,30 @@ def manual_group(path, kind, ident):
 
 
 def manual_batch_plan(path, target_id, candidate_id, mode='strict'):
-    from profiling_tools.manual_mapping import batch_plan
+    from profiling_tools.manual_mapping import BatchConflict, batch_plan
     target = manual_group(path, 'targets', target_id)
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
         targets = [json.loads(r[0]) for r in db.execute(
             "SELECT payload FROM manual_groups WHERE kind='targets' AND op_type=? AND device_id=? AND core_type=? ORDER BY id",
             (target['op_type'], target['device_id'], target['core_type']))]
         candidates = [json.loads(r[0]) for r in db.execute("SELECT payload FROM manual_groups WHERE kind='candidates' ORDER BY id")]
-    return target, batch_plan(targets, candidates, target_id, candidate_id, mode)
+    gpu_positions = {r['id']: r for r in with_call_positions(candidates, gpu=True)}
+    # Let the engine retain its normal unavailable-candidate error.
+    npu_positions = comparison_positions(targets, gpu_positions[candidate_id]) if candidate_id in gpu_positions else {}
+    try:
+        plan = batch_plan(targets, candidates, target_id, candidate_id, mode)
+    except BatchConflict as exc:
+        suggestion = exc.detail.get('suggested_candidate')
+        if suggestion:
+            for field in ('call_position', 'template_position'):
+                suggestion[field] = gpu_positions[suggestion['id']][field]
+                suggestion['npu_comparison_scope'][field] = npu_positions[target_id][field]
+        raise
+    for pair in plan['pairs']:
+        for side, rows, key in (('npu', npu_positions, 'target_id'), ('gpu', gpu_positions, 'candidate_id')):
+            for field in ('call_position', 'template_position'):
+                pair[side + '_' + field] = rows[pair[key]][field]
+    return target, plan
 
 
 def manual_options(path, op_type, device_id, core_type, target_id='', search='', offset=0, gpu_offset=0):
@@ -131,21 +150,37 @@ def manual_options(path, op_type, device_id, core_type, target_id='', search='',
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='manual_groups'").fetchone():
             return {'supported': False, 'targets': [], 'candidates': [], 'target_total': 0, 'candidate_total': 0}
         where, params = "kind='targets' AND op_type=? AND device_id=? AND core_type=?", (op_type,device_id,core_type)
-        total = db.execute('SELECT count(*) FROM manual_groups WHERE '+where,params).fetchone()[0]
-        targets = [json.loads(r[0]) for r in db.execute('SELECT payload FROM manual_groups WHERE '+where+' ORDER BY duration DESC,id LIMIT 20 OFFSET ?',(*params,offset))]
-        target = manual_group(path,'targets',target_id) if target_id else (targets[0] if targets else None)
+        all_targets = with_call_positions([json.loads(r[0]) for r in db.execute(
+            'SELECT payload FROM manual_groups WHERE '+where+' ORDER BY duration DESC,id', params)])
+        total = len(all_targets)
+        targets = all_targets[offset:offset+20]
+        target = (next((r for r in all_targets if r['id'] == target_id), None)
+                  if target_id else (targets[0] if targets else None))
+        if target_id and target is None:
+            raise ValueError('所选 NPU 调用不可用或不属于当前类型')
         if target and (target['op_type'],target['device_id'],target['core_type']) != params:
             raise ValueError('所选 NPU 调用不属于当前类型')
         limit = 20 if search else 3
         candidates, candidate_total = [], 0
         if target:
-            query = db.execute("SELECT payload FROM manual_groups WHERE kind='candidates' AND instr(search,lower(?))>0",(search,))
+            query = db.execute("SELECT payload, instr(search,lower(?))>0 FROM manual_groups WHERE kind='candidates'", (search,))
+            rows = list(query)
+            all_candidates = with_call_positions([json.loads(row[0]) for row in rows], gpu=True)
             def ranked():
                 nonlocal candidate_total
-                for row in query:
+                for candidate, row in zip(all_candidates, rows):
+                    if not row[1]:
+                        continue
                     candidate_total += 1
-                    yield rank_candidate(target,json.loads(row[0]))
+                    yield rank_candidate(target, candidate)
             candidates = heapq.nsmallest(gpu_offset+limit,ranked(),key=lambda r:(-r['rank_score'],r['id']))[gpu_offset:]
+            scopes = {}
+            for candidate in candidates:
+                name = candidate['cpu_name']
+                if name not in scopes:
+                    scopes[name] = comparison_positions(all_targets, candidate)
+                scope = scopes[name][target['id']]
+                candidate['npu_comparison_scope'].update({k: scope[k] for k in ('call_position', 'template_position')})
         return {'supported': True, 'targets': targets, 'target_total': total, 'target': target,
                 'candidates': candidates, 'candidate_total': candidate_total, 'candidate_limit':limit}
 

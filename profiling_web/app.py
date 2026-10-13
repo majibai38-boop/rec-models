@@ -476,6 +476,24 @@ def create_app(settings=None):
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.get('/api/jobs/{job_id}/operator-details')
+    def operator_details(job_id: str, op_type: str = Query(..., max_length=200),
+                         device_id: str = Query('', max_length=200), core_type: str = Query('', max_length=200),
+                         view: str = Query('groups', pattern='^(groups|units)$'),
+                         group_id: str = Query('', max_length=120), unit_id: str = Query('', max_length=120),
+                         search: str = Query('', max_length=200), sort: str = Query('npu_time', pattern='^(npu_time|ratio|position)$'),
+                         offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=200),
+                         attempt: str | None = Query(None, max_length=120)):
+        from .operator_details import query_details
+        job, root = result_paths(job_id)
+        if attempt is not None and root.name != attempt:
+            raise HTTPException(409, '结果版本已变化，请刷新任务后重新打开详情')
+        try:
+            return query_details(root / 'index.sqlite', op_type=op_type, device_id=device_id, core_type=core_type,
+                                 view=view, group_id=group_id, unit_id=unit_id, search=search, sort=sort, offset=offset, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @app.get("/api/jobs/{job_id}/artifacts/{name}")
     def artifact(job_id: str, name: str):
         job, root = result_paths(job_id)

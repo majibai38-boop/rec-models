@@ -2279,6 +2279,10 @@ def write_reports(
             "precision_cast_time_us": "observed conversion kernel cost, not predicted speedup; GPU may convert internally without a standalone Cast",
         },
     }
+    from .operator_details import build_operator_details
+    from .provenance import write_json
+    write_json(output / 'operator_details.json', build_operator_details(gpu, npu, matches, npu_kernel_mapping_rows))
+    summary['reports'].append('operator_details.json')
     if manual_enabled:
         from .manual_mapping import catalog
         from .provenance import write_json
