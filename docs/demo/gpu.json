@@ -1,0 +1,11 @@
+{"traceEvents":[
+{"name":"ProfilerStep#1","cat":"user_annotation","ph":"X","ts":0,"dur":1000,"pid":1,"tid":1},
+{"name":"aten::mm","cat":"cpu_op","ph":"X","ts":10,"dur":5,"pid":1,"tid":1,"args":{"External id":1,"Input Dims":[[32,64],[64,128]],"Input type":["float","float"]}},
+{"name":"demo_gpu_gemm","cat":"kernel","ph":"X","ts":30,"dur":120,"pid":2,"tid":7,"args":{"External id":1,"stream":7}},
+{"name":"aten::add","cat":"cpu_op","ph":"X","ts":200,"dur":5,"pid":1,"tid":1,"args":{"External id":2,"Input Dims":[[32,128],[32,128]],"Input type":["float","float"]}},
+{"name":"demo_gpu_add","cat":"kernel","ph":"X","ts":220,"dur":20,"pid":2,"tid":7,"args":{"External id":2,"stream":7}},
+{"name":"aten::relu","cat":"cpu_op","ph":"X","ts":300,"dur":5,"pid":1,"tid":1,"args":{"External id":3,"Input Dims":[[32,128]],"Input type":["float"]}},
+{"name":"demo_gpu_relu","cat":"kernel","ph":"X","ts":320,"dur":15,"pid":2,"tid":7,"args":{"External id":3,"stream":7}},
+{"name":"aten::demo_gpu_only","cat":"cpu_op","ph":"X","ts":600,"dur":5,"pid":1,"tid":1,"args":{"External id":4}},
+{"name":"demo_gpu_unmapped","cat":"kernel","ph":"X","ts":620,"dur":10,"pid":2,"tid":7,"args":{"External id":4,"stream":7}}
+]}

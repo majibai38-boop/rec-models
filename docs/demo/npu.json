@@ -1,0 +1,11 @@
+{"traceEvents":[
+{"name":"ProfilerStep#1","cat":"user_annotation","ph":"X","ts":0,"dur":1000,"pid":3,"tid":3},
+{"name":"aten::mm","cat":"cpu_op","ph":"X","ts":10,"dur":5,"pid":3,"tid":3,"args":{"External id":1,"Input Dims":[[32,64],[64,128]],"Input type":["float","float"]}},
+{"name":"demo_npu_matmul","cat":"kernel","ph":"X","ts":30,"dur":50,"pid":4,"tid":7,"args":{"External id":1,"stream":7}},
+{"name":"aten::add","cat":"cpu_op","ph":"X","ts":200,"dur":5,"pid":3,"tid":3,"args":{"External id":2,"Input Dims":[[32,128],[32,128]],"Input type":["float","float"]}},
+{"name":"demo_npu_add","cat":"kernel","ph":"X","ts":220,"dur":25,"pid":4,"tid":7,"args":{"External id":2,"stream":7}},
+{"name":"aten::relu","cat":"cpu_op","ph":"X","ts":300,"dur":5,"pid":3,"tid":3,"args":{"External id":3,"Input Dims":[[32,128]],"Input type":["float"]}},
+{"name":"demo_npu_relu","cat":"kernel","ph":"X","ts":320,"dur":10,"pid":4,"tid":7,"args":{"External id":3,"stream":7}},
+{"name":"aten::demo_npu_only","cat":"cpu_op","ph":"X","ts":400,"dur":5,"pid":3,"tid":3,"args":{"External id":4}},
+{"name":"demo_npu_cast","cat":"kernel","ph":"X","ts":420,"dur":15,"pid":4,"tid":7,"args":{"External id":4,"stream":7}}
+]}
