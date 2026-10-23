@@ -1,0 +1,4 @@
+Name,Type,Duration(us),Start Time(us),Stream ID,Device_id,Step ID,Accelerator Core,Input Shapes,Input Data Types,Output Shapes,Output Data Types,aicore_time(us),aiv_vec_time(us)
+demo_add,Add,20,100,7,0,1,AI_VECTOR_CORE,"32,128;32,128",FLOAT;FLOAT,"32,128",FLOAT,0,18
+demo_relu,Relu,10,200,7,0,1,AI_VECTOR_CORE,"32,128",FLOAT,"32,128",FLOAT,0,8
+demo_matmul,MatMulV3,50,300,7,0,1,AI_CORE,"32,64;64,128",FLOAT;FLOAT,"32,128",FLOAT,45,2

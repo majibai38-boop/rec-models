@@ -208,7 +208,7 @@ profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1
 
 逐 kernel 分类为计算主导、搬运主导、Scalar/Control 主导、多流水/混合、No Bound 候选或 Unknown。先判每个 kernel，再按其 Duration 求和统计类别占比；分母包含 Unknown，并非各条流水时间之和，也不是墙钟时间。所有 NPU 类型均参与，独立于 GPU 是否对齐和覆盖率诊断阈值。
 
-规则 `pipe_utilization_v1`：周期占比超过 80% 才视为强活跃，恰好 80% 属于 No Bound 候选范围；跨类别前两项差距不足 15 个百分点，或两类均超过 80%，保留混合候选。这是启发式初筛，不表示 HBM 带宽或算力已饱和。AIC/AIV 独立检查，Cube 输出检查 Fixpipe/MTE3；必需字段缺失、N/A、非有限值、越界或适用字段全零均保留 Unknown。数值使用 0–1 比例，带 `%` 的文本显式换算，不猜测无单位的 0–100 数值。硬件/指令模式的差异仍需单算子工具核验。
+规则 `pipe_utilization_v2`：周期占比超过 80% 才视为强活跃，恰好 80% 属于 No Bound 候选范围；同侧跨类别前两项差距不足 15 个百分点，或两类均超过 80%，保留混合候选。AIC/AIV 独立检查后，一侧明确主导、另一侧为 No Bound 时沿用明确主导侧的结论和排查建议（例如 AIC MTE2 96.5%、MAC 23%，AIV 为 No Bound，整体归为搬运主导候选）；双方主导类别相同则沿用该类别，双方均为 No Bound 则保留 No Bound。不同明确主导类别或任一侧本身为混合时，整体保留混合；任一侧 Unknown 时整体仍为 Unknown，并保留双方证据。这是启发式初筛，不表示 HBM 带宽或算力已饱和。Cube 输出检查 Fixpipe/MTE3；必需字段缺失、N/A、非有限值、越界或适用字段全零均保留 Unknown。数值使用 0–1 比例，带 `%` 的文本显式换算，不猜测无单位的 0–100 数值。硬件/指令模式的差异仍需单算子工具核验。旧结果保留原规则版本，需新建分析应用新规则。
 
 下载件：`npu_pipeline_kernels.csv` 提供逐 kernel 结论及排查建议；`npu_pipeline_analysis.json` 包含原始证据、独立 AIC/AIV 结论、类型分布及纯 NPU 类型＋shape＋dtype＋format 分组。网页的 shape 比较组还保留原有 CPU 模块和 GPU 组成约束。仅有 PipeUtilization 不生成 Roofline 结论，确认瓶颈需要真实算量、分层搬运量及对应硬件峰值。
 

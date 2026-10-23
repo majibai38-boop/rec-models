@@ -55,6 +55,44 @@ class PipelineAnalysisTest(unittest.TestCase):
         d.raw.update({f'aic_{p}_ratio': 0 for p in ('mac', 'mte2', 'mte3', 'scalar')})
         self.assertEqual(classify(d)['category'], 'memory')
 
+    def test_matmul_mte2_dominance_with_no_bound_vector(self):
+        d = detail('MIX_AIC', aic_mac_ratio=.23, aic_scalar_ratio=.124,
+                   aic_mte1_ratio=.177, aic_mte2_ratio=.965,
+                   aic_fixpipe_ratio=.034, aic_mte3_ratio=0,
+                   aiv_vec_ratio=.001, aiv_scalar_ratio=.011,
+                   aiv_mte2_ratio=.009, aiv_mte3_ratio=.001)
+        answer = classify(d)
+        self.assertEqual(answer['category'], 'memory')
+        self.assertEqual(answer['method'], 'pipe_utilization_v2')
+        self.assertEqual([s['category'] for s in answer['sides']], ['memory', 'no_bound'])
+        self.assertIn('aic_mte2_ratio', answer['reason'])
+        self.assertIn('96.5%', answer['reason'])
+        self.assertEqual(answer['next_check'], answer['sides'][0]['next_check'])
+
+    def test_no_bound_domain_does_not_override_either_dominant_domain(self):
+        for core in ('MIX_AIC', 'MIX_AIV', 'MIX'):
+            for field, kind in (('aic_mac_ratio', 'compute'), ('aic_scalar_ratio', 'scalar'),
+                                ('aic_fixpipe_ratio', 'memory'), ('aiv_vec_ratio', 'compute'),
+                                ('aiv_scalar_ratio', 'scalar'), ('aiv_mte3_ratio', 'memory')):
+                with self.subTest(core=core, field=field):
+                    answer = classify(detail(core, **{field: .95}))
+                    self.assertEqual(answer['category'], kind)
+                    if field == 'aic_fixpipe_ratio':
+                        self.assertIn('不能直接归因于 HBM', answer['next_check'])
+
+    def test_mix_retains_uncertainty_and_real_competition(self):
+        self.assertEqual(classify(detail('MIX_AIC'))['category'], 'no_bound')
+        self.assertEqual(classify(detail('MIX_AIC', aic_mte2_ratio=.95,
+                                         aiv_mte2_ratio=.95))['category'], 'memory')
+        self.assertEqual(classify(detail('MIX_AIC', aic_mac_ratio=.9,
+                                         aic_mte2_ratio=.85))['category'], 'mixed')
+        for value in (None, 'N/A', 0):
+            d = detail('MIX_AIC', aic_mte2_ratio=.965,
+                       **{f'aiv_{p}_ratio': value for p in ('vec', 'scalar', 'mte2', 'mte3')})
+            answer = classify(d)
+            self.assertEqual(answer['category'], 'unknown')
+            self.assertEqual(answer['sides'][0]['category'], 'memory')
+
     def test_legacy_and_missing_cube_output_path(self):
         d = KernelDetail(0, core_type='AI_CORE', raw={p+'_ratio': .1 for p in ('vec','mac','scalar','mte1','mte2','mte3')})
         d.raw['mac_ratio'] = .9

@@ -66,8 +66,8 @@ const plotted=computed(()=>chartData.value.filter(r=>r.ratio!=null&&numel(r.npu_
 const tooltip={renderMode:'richText',confine:true}
 const bars=computed(()=>{
   const rows=chartData.value.slice(0,15).reverse()
-  return {tooltip:{...tooltip,trigger:'axis'},legend:{data:['NPU 可比均值','GPU 可比均值']},grid:{left:125,right:25,top:40,bottom:40},
-    xAxis:{type:'value',name:'μs'},yAxis:{type:'category',data:rows.map(r=>'shape '+r.group_id.slice(0,6))},
+  return {tooltip:{...tooltip,trigger:'axis'},legend:{data:['NPU 可比均值','GPU 可比均值'],top:0,left:'center'},grid:{left:125,right:35,top:55,bottom:50,containLabel:true},
+    xAxis:{type:'value',name:'μs',nameGap:8},yAxis:{type:'category',data:rows.map(r=>'shape '+r.group_id.slice(0,6))},
     series:[['NPU 可比均值','npu_mean_us','#167d78'],['GPU 可比均值','gpu_mean_us','#7489ba']].map(([name,field,color])=>({name,type:'bar',itemStyle:{color},
       data:rows.map(r=>({value:r[field],group_id:r.group_id,name:tensorText(r.npu_metadata[0])}))}))}
 })

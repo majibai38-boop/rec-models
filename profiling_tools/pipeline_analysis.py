@@ -11,6 +11,7 @@ from .call_metadata import shapes, dtypes
 
 THRESHOLD = .8
 DOMINANCE_MARGIN = .15
+METHOD = 'pipe_utilization_v2'
 LABELS = {
     'compute': '计算主导候选', 'memory': '搬运主导候选',
     'scalar': 'Scalar/Control 主导候选', 'mixed': '多流水/混合候选',
@@ -85,7 +86,7 @@ def screen_side(raw, side):
 
 
 def classify(detail):
-    base = {'method': 'pipe_utilization_v1', 'threshold': THRESHOLD,
+    base = {'method': METHOD, 'threshold': THRESHOLD,
             'dominance_margin': DOMINANCE_MARGIN, 'sides': []}
     if detail is None:
         return result('unknown', '缺少 kernel_details 数据。', **base)
@@ -106,8 +107,24 @@ def classify(detail):
     if len(parts) == 1:
         return {**parts[0], **base}
     kinds = {p['category'] for p in parts}
-    kind = 'unknown' if 'unknown' in kinds else next(iter(kinds)) if len(kinds) == 1 else 'mixed'
-    return result(kind, '；'.join(p['side'].upper() + '：' + p['label'] for p in parts), **base)
+    # No Bound is not a competing bottleneck. Missing evidence still prevents
+    # a whole-kernel conclusion, and an internally mixed side stays mixed.
+    active_kinds = kinds - {'no_bound'}
+    if 'unknown' in kinds:
+        kind = 'unknown'
+    elif not active_kinds:
+        kind = 'no_bound'
+    elif len(active_kinds) == 1:
+        kind = next(iter(active_kinds))
+    else:
+        kind = 'mixed'
+    reason = '；'.join(p['side'].upper() + '：' + p['label'] for p in parts)
+    answer = result(kind, reason, **base)
+    if 'no_bound' in kinds and kind in {'compute', 'memory', 'scalar'}:
+        dominant_side = next(p for p in parts if p['category'] == kind)
+        answer['reason'] += '；采用明确主导侧的结论：' + dominant_side['reason']
+        answer['next_check'] = dominant_side['next_check']
+    return answer
 
 
 def summarize(kernels):
@@ -149,7 +166,7 @@ def build_pipeline_report(npu, rows):
     def group(items, include_shape=False):
         return {**{k: items[0][k] for k in ('op_type', 'device_id', 'core_type')},
                 **({'metadata': items[0]['metadata']} if include_shape else {}), **summarize(items)}
-    return {'version': 1, 'method': 'pipe_utilization_v1', 'threshold': THRESHOLD,
+    return {'version': 1, 'method': METHOD, 'threshold': THRESHOLD,
             'dominance_margin': DOMINANCE_MARGIN,
             'note': '流水初筛候选，非 Roofline 饱和结论；占比不可相加。分类耗时为 kernel duration 之和，非墙钟时间。',
             'summary': summarize(kernels), 'kernels': kernels,

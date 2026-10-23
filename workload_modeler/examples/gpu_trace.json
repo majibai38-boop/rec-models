@@ -1,0 +1,7 @@
+{"traceEvents":[
+{"name":"ProfilerStep#1","cat":"user_annotation","ph":"X","pid":1,"tid":1,"ts":0,"dur":100,"args":{}},
+{"name":"aten::add","cat":"cpu_op","ph":"X","pid":1,"tid":1,"ts":10,"dur":5,"args":{"External id":1,"Input Dims":[[1024],[1024]],"Input type":["float","float"]}},
+{"name":"elementwise_add","cat":"kernel","ph":"X","pid":2,"tid":7,"ts":20,"dur":10,"args":{"External id":1,"device":0,"stream":7}},
+{"name":"aten::add","cat":"cpu_op","ph":"X","pid":1,"tid":1,"ts":40,"dur":5,"args":{"External id":2,"Input Dims":[[1024],[1024]],"Input type":["float","float"]}},
+{"name":"elementwise_add","cat":"kernel","ph":"X","pid":2,"tid":7,"ts":50,"dur":10,"args":{"External id":2,"device":0,"stream":7}}
+]}
