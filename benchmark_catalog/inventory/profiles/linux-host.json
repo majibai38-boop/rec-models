@@ -1,0 +1,18 @@
+{
+  "schema_version": "recbench.inventory-profile/v1",
+  "id": "linux-host",
+  "kind": "host",
+  "platforms": ["Linux"],
+  "description": "Linux host inventory; device-independent read-only probes.",
+  "probes": [
+    {"id": "cpu", "argv": ["lscpu", "--json"], "parser": "lscpu", "required": true},
+    {"id": "memory", "paths": ["/proc/meminfo"], "parser": "meminfo", "required": true},
+    {"id": "os", "paths": ["/etc/os-release"], "parser": "os_release", "required": false},
+    {"id": "numa", "argv": ["numactl", "--hardware"], "parser": "raw", "required": false},
+    {"id": "network", "argv": ["ip", "-j", "link", "show"], "parser": "linux_network", "required": false},
+    {"id": "pci", "argv": ["lspci", "-Dnn"], "parser": "raw", "required": false},
+    {"id": "system-model", "paths": ["/sys/class/dmi/id/product_name"], "parser": "system_model", "required": false},
+    {"id": "bios", "paths": ["/sys/class/dmi/id/bios_version"], "parser": "bios_version", "required": false},
+    {"id": "cgroup", "paths": ["/proc/self/cgroup"], "parser": "raw", "required": false}
+  ]
+}

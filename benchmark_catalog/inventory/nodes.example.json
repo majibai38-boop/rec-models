@@ -1,0 +1,25 @@
+{
+  "schema_version": "recbench.inventory-config/v1",
+  "execution": {"timeout_seconds": 15, "max_output_bytes": 262144, "max_devices": 64},
+  "profile_files": [],
+  "nodes": [
+    {
+      "id": "gpu-01",
+      "expected_hostname": "replace-with-gpu-hostname",
+      "expected_os": "Linux",
+      "profiles": ["linux-host", "nvidia"],
+      "expected_devices": {"nvidia": 8},
+      "access": {"method": "ssh", "target": "gpu-benchmark", "notes": "SSH config alias; run the collector on this node. No credentials in this file."},
+      "labels": {"role": "benchmark", "site": "lab"}
+    },
+    {
+      "id": "npu-01",
+      "expected_hostname": "replace-with-npu-hostname",
+      "expected_os": "Linux",
+      "profiles": ["linux-host", "ascend"],
+      "expected_devices": {"ascend": 8},
+      "access": {"method": "ssh", "target": "npu-benchmark"},
+      "labels": {"role": "benchmark", "site": "lab"}
+    }
+  ]
+}

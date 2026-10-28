@@ -21,6 +21,10 @@ node_modules/
 /profiling_web/data/
 /profiling_web/.env
 
+# Local node declarations and hardware captures
+/inventory.local.json
+/inventory-results/
+
 # Editors and operating systems
 .idea/
 .vscode/

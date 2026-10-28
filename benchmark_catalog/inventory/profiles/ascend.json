@@ -1,0 +1,17 @@
+{
+  "schema_version": "recbench.inventory-profile/v1",
+  "id": "ascend",
+  "kind": "npu",
+  "vendor": "Ascend",
+  "platforms": ["Linux"],
+  "description": "NPU compute chips keyed by physical NPU ID and Chip ID; not board count. Unknown formats need a matching profile/parser.",
+  "probes": [
+    {"id": "devices", "argv": ["npu-smi", "info", "-m"], "parser": "ascend_mapping", "required": true},
+    {"id": "board", "argv": ["npu-smi", "info", "-t", "board", "-i", "{device_id}", "-c", "{chip_id}"], "parser": "ascend_board", "per_device": true, "required": false},
+    {"id": "memory", "argv": ["npu-smi", "info", "-t", "usages", "-i", "{device_id}", "-c", "{chip_id}"], "parser": "ascend_memory", "per_device": true, "required": false},
+    {"id": "health", "argv": ["npu-smi", "info", "-t", "health", "-i", "{device_id}", "-c", "{chip_id}"], "parser": "ascend_health", "per_device": true, "required": false},
+    {"id": "topology", "argv": ["npu-smi", "info", "-t", "topo"], "parser": "raw", "required": false},
+    {"id": "driver", "paths": ["/usr/local/Ascend/driver/version.info"], "parser": "version", "required": false},
+    {"id": "cann", "paths": ["/usr/local/Ascend/ascend-toolkit/latest/version.cfg", "/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/ascend_toolkit_install.info", "/usr/local/Ascend/ascend-toolkit/latest/x86_64-linux/ascend_toolkit_install.info"], "parser": "version", "required": false}
+  ]
+}

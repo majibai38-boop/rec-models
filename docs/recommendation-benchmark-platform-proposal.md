@@ -1,6 +1,6 @@
 **推荐模型 Benchmark & Performance 平台方案**
 
-状态：规划已归档，功能尚未实施。后续任务、依赖与验收清单见[实施计划](recommendation-benchmark-platform-roadmap.md)。
+状态：规划已归档；[设备盘点工具](../benchmark_core/inventory/README.md)已实现，目标 GPU/NPU 节点采集待验收，其余平台能力尚未实施。后续任务、依赖与验收清单见[实施计划](recommendation-benchmark-platform-roadmap.md)。
 
 调研日期：2026-10-28。本文是基于公开一手资料与当前仓库静态检查的设计建议，尚未在 GPU/NPU 上验证部署、模型兼容性或性能。以下默认 NVIDIA GPU 与昇腾 NPU，执行节点为 Linux；其他 NPU 厂商需增加独立适配器。控制界面可从当前 Windows 工作站访问。
 

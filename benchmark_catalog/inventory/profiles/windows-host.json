@@ -1,0 +1,21 @@
+{
+  "schema_version": "recbench.inventory-profile/v1",
+  "id": "windows-host",
+  "kind": "host",
+  "platforms": ["Windows"],
+  "description": "Windows CIM host inventory; no admin requirement or device runtime imports.",
+  "probes": [
+    {
+      "id": "cim",
+      "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $taskCpu=@(Get-CimInstance Win32_Processor); $taskSystem=Get-CimInstance Win32_ComputerSystem; $taskBios=Get-CimInstance Win32_BIOS; $taskOs=Get-CimInstance Win32_OperatingSystem; [ordered]@{cpu_model=($taskCpu.Name -join '; '); cpu_sockets=$taskCpu.Count; cpu_physical_cores=($taskCpu | Measure-Object NumberOfCores -Sum).Sum; cpu_logical_count=($taskCpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum; memory_total_bytes=$taskSystem.TotalPhysicalMemory; system_model=$taskSystem.Model; system_manufacturer=$taskSystem.Manufacturer; bios_version=$taskBios.SMBIOSBIOSVersion; os_distribution=$taskOs.Caption} | ConvertTo-Json -Depth 4 -Compress"],
+      "parser": "windows_host",
+      "required": true
+    },
+    {
+      "id": "network",
+      "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $taskAdapters=@(Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' | Select-Object Name,NetConnectionID,NetConnectionStatus,Speed); ConvertTo-Json -InputObject $taskAdapters -Depth 4 -Compress"],
+      "parser": "windows_network",
+      "required": false
+    }
+  ]
+}

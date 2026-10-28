@@ -1,0 +1,15 @@
+{
+  "schema_version": "recbench.inventory-profile/v1",
+  "id": "nvidia",
+  "kind": "gpu",
+  "vendor": "NVIDIA",
+  "platforms": ["Linux", "Windows"],
+  "description": "Physical GPU inventory visible to nvidia-smi; not CUDA ordinals or MIG compute-instance counts.",
+  "probes": [
+    {"id": "devices", "argv": ["nvidia-smi", "--query-gpu=index,uuid,name,pci.bus_id,memory.total,driver_version", "--format=csv,noheader,nounits"], "parser": "nvidia_csv", "required": true},
+    {"id": "firmware", "argv": ["nvidia-smi", "--query-gpu=uuid,vbios_version", "--format=csv,noheader,nounits"], "parser": "nvidia_firmware_csv", "required": false},
+    {"id": "topology", "argv": ["nvidia-smi", "topo", "-m"], "parser": "raw", "platforms": ["Linux"], "required": false},
+    {"id": "instances", "argv": ["nvidia-smi", "-L"], "parser": "raw", "required": false},
+    {"id": "cuda-toolkit", "argv": ["nvcc", "--version"], "parser": "version", "required": false}
+  ]
+}
