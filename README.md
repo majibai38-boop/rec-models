@@ -15,6 +15,8 @@ GPU 和 NPU 的 kernel 名称、数量、融合方式不同，直接按名字比
 
 不需要在分析机器上安装 GPU/NPU 硬件；Web 分析不调用外部 AI 服务。它是采集后的对比工作台，不是 profiler 采集器，也不是自动证明两端模型等价的工具。
 
+后续平台演进已整理为[推荐模型 Benchmark 平台方案](docs/recommendation-benchmark-platform-proposal.md)和[实施计划与验收清单](docs/recommendation-benchmark-platform-roadmap.md)，覆盖环境管理、GPU/NPU 模型执行、性能测量以及 Web / Skill 入口。目前处于规划阶段。
+
 ## 界面演示
 
 ![上传、范围确认、总体指标、类型对比和 Shape 图表的分步演示](docs/media/workbench-demo.gif)
