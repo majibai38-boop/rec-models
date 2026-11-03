@@ -94,13 +94,29 @@ function downloadCatalog(item){
 }
 function renderCatalog(){
   const kind=state.kind;$('catalog-title').textContent=kind==='hardware'?'芯片规格库':'平台配置库';$('catalog-list').replaceChildren();
-  for(const item of state[kind]){
+  const deleted=$('catalog-trash').checked,search=$('catalog-search').value.trim().toLowerCase(),all=state.catalogRows||[];
+  const rows=all.filter(item=>[item.name,item.vendor,item.cpu_model,item.note].filter(Boolean).join(' ').toLowerCase().includes(search));
+  $('catalog-new').disabled=deleted;$('catalog-count').textContent=`${rows.length} / ${all.length} 项`;
+  if(!rows.length)$('catalog-list').append(node('p',deleted?'回收站中没有匹配条目。':'没有匹配条目。','note'));
+  for(const item of rows){
     const card=node('article');card.append(node('h3',item.name+' · v'+item.revision));const dl=node('dl');
     if(kind==='hardware')for(const [k,m]of Object.entries(item.metrics)){dl.append(node('dt',metricLabels[k]||k),node('dd',fmt(m.value)+' '+m.unit+' · '+m.evidence+(k.startsWith('matrix_')?' / 稠密：'+(m.dense===true?'是':m.dense===false?'否':'未确认'):'')));}
     else{const hw=state.hardware.find(h=>h.id===item.hardware_id);dl.append(node('dt','芯片固定版本'),node('dd',(hw?.name||item.hardware_id)+' · v'+item.hardware_revision));for(const [k,[title]]of Object.entries(platformFields))dl.append(node('dt',title),node('dd',item[k]??'未知'));}
-    card.append(dl,node('p',item.note,'muted'));const tools=node('div',null,'toolbar');
-    for(const [title,fn]of [['修改新版本',()=>editCatalog(item)],['版本历史',async()=>{$('detail-content').textContent=JSON.stringify(await api(`/api/catalog/${kind}/${item.id}/history`),null,2);$('detail-dialog').showModal();}],['导出JSON',()=>downloadCatalog(item)]]){
-      const b=node('button',title,'secondary');b.onclick=()=>Promise.resolve().then(fn).catch(e=>message(e.message));tools.append(b);
+    card.append(dl,node('p',item.note,'muted'));
+    if(kind==='hardware'){
+      const evidence=node('details');evidence.append(node('summary','规格来源与口径'));
+      for(const [key,m]of Object.entries(item.metrics)){
+        const p=node('p',null,'metric-source');p.append(node('strong',(metricLabels[key]||key)+'：'));
+        if(/^https?:\/\//i.test(m.source)){const a=node('a','原始资料');a.href=m.source;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}
+        else p.append(node('span',m.source||'来源未知'));
+        if(m.note)p.append(node('span',' · '+m.note));evidence.append(p);
+      }card.append(evidence);
+    }
+    if(deleted)card.append(node('p','删除于 '+item.deleted_at.slice(0,10),'muted'));
+    const tools=node('div',null,'toolbar');
+    const actions=[...(deleted?[['恢复',()=>recycleCatalog(kind,item,true)]]:[['修改新版本',()=>editCatalog(item)]]),['版本历史',async()=>{$('detail-content').textContent=JSON.stringify(await api(`/api/catalog/${kind}/${item.id}/history`),null,2);$('detail-dialog').showModal();}],['导出JSON',()=>downloadCatalog(item)],...(!deleted?[['移入回收站',()=>recycleCatalog(kind,item)]]:[])];
+    for(const [title,fn]of actions){
+      const b=node('button',title,'secondary'+(title==='移入回收站'?' danger':''));b.onclick=async()=>{b.disabled=true;try{await fn();}catch(e){message(e.message);}finally{b.disabled=false;}};tools.append(b);
     }card.append(tools);$('catalog-list').append(card);
   }
 }
@@ -110,7 +126,7 @@ $('editor-form').onsubmit=async e=>{
     const payload=editorMode==='json'?JSON.parse($('editor-json').value):readCatalogForm(),x=state.editing;
     if(x)await api(`/api/catalog/${state.kind}/${x.id}`,{method:'PUT',body:JSON.stringify({expected_revision:x.revision,payload})});
     else await post('/api/catalog/'+state.kind,payload);
-    $('editor').close();await catalogs();renderCatalog();message('新版本已保存；平台需显式选择新芯片版本，历史结果不变。');
+    $('editor').close();await catalogs();await loadCatalogPage();message('新版本已保存；平台需显式选择新芯片版本，历史结果不变。');
   }catch(e){$('editor-error').textContent=e.message;}finally{$('editor-save').disabled=false;}
 };
 bind('editor-form-mode',()=>changeEditorMode('form'));bind('editor-json-mode',()=>changeEditorMode('json'));

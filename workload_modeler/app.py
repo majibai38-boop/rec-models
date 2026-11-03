@@ -12,7 +12,7 @@ import time
 from urllib.parse import urlsplit
 
 import psutil
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -183,7 +183,9 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
 
     @app.get("/static/{name}")
     def static(name:str):
-        if name not in {"app.js","catalog.js","diagnostics.js","assessment.js","empirical.js","workflow.js","style.css","forms.css"}:
+        if name == "theme.css":
+            return FileResponse(STATIC.parent.parent/"web_shared"/"theme.css",media_type="text/css")
+        if name not in {"app.js","catalog.js","management.js","diagnostics.js","assessment.js","empirical.js","workflow.js","style.css","forms.css"}:
             raise HTTPException(404)
         return FileResponse(STATIC/name)
 
@@ -195,10 +197,10 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
                     boundary="本机免令牌；仅单设备预测；不执行上传代码")
 
     @app.get("/api/catalog/{kind}")
-    def catalog(kind:str):
+    def catalog(kind:str,deleted:bool=False):
         if kind not in {"hardware","platform"}:
             raise HTTPException(404)
-        return store.list(kind)
+        return store.list(kind,deleted=deleted)
 
     @app.get("/api/catalog/{kind}/{key}/history")
     def history(kind:str,key:str):
@@ -213,9 +215,20 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
         data=await body(request)
         return store.save(kind,data["payload"],key,data["expected_revision"])
 
+    @app.delete("/api/catalog/{kind}/{key}")
+    def delete_catalog(kind:str,key:str,expected_revision:int=Query(ge=1),confirm:bool=False):
+        if not confirm:
+            raise ValueError("请确认移入回收站；历史版本仍将保留")
+        return store.trash_catalog(kind,key,expected_revision)
+
+    @app.post("/api/catalog/{kind}/{key}/restore")
+    def restore_catalog(kind:str,key:str,expected_revision:int=Query(ge=1)):
+        return store.trash_catalog(kind,key,expected_revision,deleted=False)
+
     @app.get("/api/jobs")
-    def jobs():
-        return store.jobs()
+    def jobs(deleted:bool=False,search:str=Query(default="",max_length=120),
+             offset:int=Query(default=0,ge=0),limit:int=Query(default=200,ge=1,le=201)):
+        return store.jobs(deleted=deleted,search=search,offset=offset,limit=limit)
 
     @app.post("/api/jobs")
     async def new(request:Request):
@@ -235,10 +248,20 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
         name=str(data.get("name","")).strip()
         if not 1<=len(name)<=120:
             raise ValueError("任务名须为1–120字符")
-        store.job(key)
-        with store.connect() as c:
-            c.execute("UPDATE jobs SET name=? WHERE id=?",(name,key))
-        return store.job(key)
+        return store.rename_job(key,name)
+
+    @app.delete("/api/jobs/{key}")
+    def delete_job(key:str,confirm:bool=False):
+        if not confirm:
+            raise ValueError("请确认移入回收站；输入和结果仍将保留，不释放磁盘空间")
+        with manager.lock:
+            if key in manager.active:
+                raise Conflict("任务进程尚未退出，请稍后再试")
+            return store.trash_job(key)
+
+    @app.post("/api/jobs/{key}/restore")
+    def restore_job(key:str):
+        return store.trash_job(key,deleted=False)
 
     @app.put("/api/jobs/{key}/inputs/{filename}")
     async def upload(key:str,filename:str,request:Request):
@@ -300,12 +323,12 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
         if not req.scope.step and not req.scope.all_steps:
             raise ValueError("必须选择Step或明确确认全范围")
         require_inputs(key,req.scope.side)
-        src=store.get("platform",req.source_platform_id,req.source_platform_revision)
-        dst=store.get("platform",req.target_platform_id,req.target_platform_revision)
+        src=store.active("platform",req.source_platform_id,req.source_platform_revision)
+        dst=store.active("platform",req.target_platform_id,req.target_platform_revision)
         if src["card_count"]!=1 or dst["card_count"]!=1:
             raise ValueError("首版只支持单设备建模；不能把多卡通信规格当作单卡倍率")
-        sh=store.get("hardware",src["hardware_id"],src["hardware_revision"])
-        th=store.get("hardware",dst["hardware_id"],dst["hardware_revision"])
+        sh=store.active("hardware",src["hardware_id"],src["hardware_revision"])
+        th=store.active("hardware",dst["hardware_id"],dst["hardware_revision"])
         if (req.scope.side=="gpu" and sh["vendor"]!="NVIDIA") or (req.scope.side=="npu" and sh["vendor"]!="Ascend"):
             raise ValueError("输入类型与源硬件厂商不一致")
         config=dict(request=req.model_dump(),source_platform=src,target_platform=dst,source_hardware=sh,target_hardware=th,

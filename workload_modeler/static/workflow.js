@@ -37,6 +37,7 @@ function workflowControls(){
   // A browser upload cannot be cancelled by the worker's cancel action.
   $('cancel').disabled=Boolean(state.formBusy||!['running','inspecting'].includes(state.job?.status));
   $('new-job').disabled=Boolean(state.formBusy);$('clone').disabled=Boolean(busy||!state.job);$('rename').disabled=Boolean(state.formBusy||!state.job);
+  $('delete-job').disabled=Boolean(busy||!state.job);
   $('jobs').querySelectorAll('button').forEach(x=>x.disabled=Boolean(state.formBusy));
 }
 async function uploadSelected(files,key){

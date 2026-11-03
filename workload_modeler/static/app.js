@@ -1,6 +1,14 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const state={job:null,kind:'hardware',hardware:[],platform:[],offset:0,search:'',inventory:null,editing:null,poll:null};
+const jobLabels={draft:'草稿',uploading:'上传中',inspecting:'预检查中',ready:'待分析',running:'分析中',completed:'已完成',failed:'失败',cancelled:'已取消',interrupted:'已中断'};
+function jobStatus(status){$('job-status').textContent=jobLabels[status]||status;$('job-status').dataset.status=status;}
+function showPage(page){
+  const headings={analysis:['性能预测工作台','芯片规格 → 模型画像 → 算子折算 → 场景验证'],hardware:['芯片规格','维护算力、带宽与证据来源，为性能折算提供可追溯的依据。'],platform:['平台配置','组合芯片版本、CPU、内存和软件环境，明确每次分析的运行条件。']};
+  document.querySelectorAll('.app-nav button').forEach(b=>{const active=b.id==='nav-'+page;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+  $('page-title').textContent=headings[page][0];$('page-description').textContent=headings[page][1];
+  $('analysis-page').hidden=page!=='analysis';$('catalog-page').hidden=page==='analysis';
+}
 const fmt=(v,n=2)=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:n});
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 function message(text){$('message').textContent=text;$('message').hidden=!text;}
@@ -8,10 +16,44 @@ async function api(path,options={}){const response=await fetch(path,{...options,
 const post=(path,data={})=>api(path,{method:'POST',body:JSON.stringify(data)});
 function bind(id,handler){$(id).addEventListener('click',async()=>{message('');try{await handler();}catch(e){message(e.message);}});}
 function option(select,value,text){const n=node('option',text);n.value=value;select.append(n);}
-function clean(item){const {id,revision,created,...payload}=item;return payload;}
-async function catalogs(){[state.hardware,state.platform]=await Promise.all(['hardware','platform'].map(k=>api('/api/catalog/'+k)));for(const id of ['source-platform','target-platform']){const s=$(id),old=s.value;s.replaceChildren();for(const p of state.platform)option(s,p.id,p.name+' · v'+p.revision);if(state.platform.some(p=>p.id===old))s.value=old;else{const p=state.platform.find(p=>id==='source-platform'?p.name.includes('L20'):p.name.includes('32'));if(p)s.value=p.id;}}}
+function clean(item){const {id,revision,created,deleted_at,...payload}=item;return payload;}
+async function catalogs(){
+  [state.hardware,state.platform]=await Promise.all(['hardware','platform'].map(k=>api('/api/catalog/'+k)));
+  for(const id of ['source-platform','target-platform']){
+    const s=$(id),old=s.value,snapshot=state.job?.config?.[id.replace('-','_')];s.replaceChildren();option(s,'','请选择有效平台');
+    for(const p of state.platform){
+      const frozen=snapshot?.id===p.id&&['completed','running','cancelled'].includes(state.job?.status);
+      option(s,p.id,frozen?snapshot.name+' · v'+snapshot.revision+'（任务快照）':p.name+' · v'+p.revision);
+    }
+    if(snapshot&&!state.platform.some(p=>p.id===snapshot.id))option(s,snapshot.id,snapshot.name+' · v'+snapshot.revision+'（已删除，仅历史快照）');
+    if(state.platform.some(p=>p.id===old)||snapshot?.id===old)s.value=old;
+    else if(!state.job){const p=state.platform.find(p=>id==='source-platform'?p.name.includes('L20'):p.name.includes('950PR 32'));if(p)s.value=p.id;}
+  }
+}
 function requireJob(){if(!state.job)throw Error('请先新建任务');return state.job.id;}
-async function jobs(){const rows=await api('/api/jobs');$('jobs').replaceChildren();for(const r of rows){const b=node('button',r.name,'job'+(state.job?.id===r.id?' selected':''));b.append(node('small',r.status+' · '+r.created.slice(0,10)));b.onclick=()=>selectJob(r.id).catch(e=>message(e.message));$('jobs').append(b);}}
+async function jobs(){
+  const epoch=state.jobsEpoch=(state.jobsEpoch||0)+1,deleted=$('jobs-trash').checked;
+  const params=new URLSearchParams({deleted,search:state.jobSearch||'',offset:state.jobOffset||0,limit:51});
+  const rows=await api('/api/jobs?'+params);if(epoch!==state.jobsEpoch)return;$('jobs').replaceChildren();
+  if(!rows.length&&(state.jobOffset||0)>0){state.jobOffset=Math.max(0,state.jobOffset-50);return jobs();}
+  $('job-page').textContent='第 '+(Math.floor((state.jobOffset||0)/50)+1)+' 页';
+  $('job-prev').disabled=!(state.jobOffset>0);$('job-next').disabled=rows.length<=50;
+  if(!rows.length)$('jobs').append(node('p',deleted?'回收站为空。':'暂无匹配任务。','task-empty'));
+  for(const r of rows.slice(0,50)){
+    if(deleted){
+      const row=node('div',null,'recycled-job'),b=node('button','恢复','secondary');
+      b.disabled=Boolean(state.formBusy);b.setAttribute('aria-label','恢复任务 '+r.name);
+      b.onclick=async()=>{if(state.formBusy)return;b.disabled=true;try{await post('/api/jobs/'+r.id+'/restore');await jobs();message('任务已恢复，可在正常任务列表查看。');}catch(e){message(e.message);b.disabled=false;}};
+      row.append(node('strong',r.name),node('small','删除于 '+r.deleted_at.slice(0,10)),b);$('jobs').append(row);continue;
+    }
+    const b=node('button',null,'job-link'+(state.job?.id===r.id?' selected':''));b.title=r.name;b.disabled=Boolean(state.formBusy);
+    if(state.job?.id===r.id)b.setAttribute('aria-current','true');
+    const status=node('span',null,'job-status'),dot=node('i',null,r.status);dot.setAttribute('aria-hidden','true');
+    status.append(dot,node('span',(jobLabels[r.status]||r.status)+' · '+r.created.slice(0,10)));
+    b.append(node('span',r.name,'job-name'),status);
+    b.onclick=()=>{if(state.formBusy)return;showPage('analysis');selectJob(r.id).catch(e=>message(e.message));};$('jobs').append(b);
+  }
+}
 function restoreRequest(r){if(!r)return;$('side').value=r.scope.side;$('workload').value=r.workload;$('source-platform').value=r.source_platform_id;$('target-platform').value=r.target_platform_id;$('all-steps').checked=r.scope.all_steps;$('source-mode').value=r.assumptions.source_fp32_mode;$('target-mode').value=r.assumptions.target_fp32_mode;$('precision-confirm').checked=r.assumptions.precision_equivalence_confirmed;$('allow-estimates').checked=r.assumptions.allow_estimated_specs;$('serial-step').checked=r.assumptions.fixed_gap_serial_step;$('calibrations').value=JSON.stringify(r.calibrations,null,2);const {source_fp32_mode,target_fp32_mode,precision_equivalence_confirmed,allow_estimated_specs,fixed_gap_serial_step,...eff}=r.assumptions;$('assumptions').value=JSON.stringify(eff,null,2);}
 async function selectJob(key){
   if(state.formBusy)return;
@@ -19,7 +61,8 @@ async function selectJob(key){
   if(state.job&&state.job.id!==key){$('trace-file').value='';$('detail-file').value='';}
   clearTimeout(state.poll);const epoch=(state.selectEpoch||0)+1;state.selectEpoch=epoch;
   const job=await api('/api/jobs/'+key);if(epoch!==state.selectEpoch)return;state.job=job;
-  $('job-title').textContent=job.name;$('job-name').value=job.name;$('job-status').textContent=job.status;
+  await catalogs();if(epoch!==state.selectEpoch)return;
+  $('job-title').textContent=job.name;$('job-name').value=job.name;jobStatus(job.status);
   $('results').hidden=job.status!=='completed';state.inventory=null;
   for(const [id,label] of [['pid','唯一PID自动选择'],['step','请选择Step'],['device','唯一设备自动选择']]){const s=$(id);s.replaceChildren();option(s,'',label);}
   $('inventory').textContent='尚未预检查。选择文件后点击主按钮会自动上传；已完成任务须复用输入后修改。';
@@ -47,10 +90,10 @@ async function selectJob(key){
 function schedulePoll(){
   clearTimeout(state.poll);const key=requireJob();
   state.poll=setTimeout(async()=>{try{if(state.job?.id!==key)return;const j=await api('/api/jobs/'+key);if(state.job?.id!==key)return;
-    $('job-status').textContent=j.status;state.job=j;if(['running','inspecting','uploading'].includes(j.status))schedulePoll();else{await selectJob(j.id);if(state.job?.id===key&&j.status==='ready')message('预检查已完成，请确认范围后生成分析。');else if(state.job?.id===key&&j.status==='completed')message('分析已完成。');}
+    jobStatus(j.status);state.job=j;if(['running','inspecting','uploading'].includes(j.status))schedulePoll();else{await selectJob(j.id);if(state.job?.id===key&&j.status==='ready')message('预检查已完成，请确认范围后生成分析。');else if(state.job?.id===key&&j.status==='completed')message('分析已完成。');}
   }catch(e){message(e.message);}},1500);
 }
-async function newJob(){if(state.formBusy)return;const j=await post('/api/jobs',{name:$('job-name').value});await selectJob(j.id);}
+async function newJob(){if(state.formBusy)return;const j=await post('/api/jobs',{name:$('job-name').value});$('jobs-trash').checked=false;state.jobOffset=0;showPage('analysis');await selectJob(j.id);}
 async function loadInventory(){const key=requireJob(),epoch=state.selectEpoch;const data=await api('/api/jobs/'+key+'/inventory');if(state.job?.id!==key||epoch!==state.selectEpoch)return;state.inventory=data;$('inventory').textContent=`${fmt(data.trace_events,0)} 个trace事件，${fmt(data.detail_rows,0)} 行NPU明细。${data.warnings.join(' ')}`;const p=$('pid');p.replaceChildren();option(p,'','唯一PID自动选择');data.cpu_pids.forEach(x=>option(p,x.pid,x.pid+' · '+x.count+' 个CPU op'));if(data.cpu_pids.length===1)p.value=data.cpu_pids[0].pid;fillSteps();const d=$('device');d.replaceChildren();option(d,'','唯一设备自动选择');const dev=data.side==='npu'&&data.detail_devices?.length?data.detail_devices:data.devices;dev.forEach(x=>option(d,x,x));if(dev.length===1)d.value=dev[0];}
 function fillSteps(){const s=$('step');s.replaceChildren();option(s,'','请选择Step');for(const x of state.inventory?.steps||[]){if(!x.pid||!$('pid').value||x.pid===$('pid').value)option(s,x.name,x.name+(x.duration_us?' · '+fmt(x.duration_us)+' μs':''));}}
 $('pid').addEventListener('change',fillSteps);
@@ -83,8 +126,8 @@ bind('search-button',async()=>{state.search=$('search').value;state.offset=0;awa
 function showResultTab(tab){document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));for(const t of ['types','empirical','overview','evidence'])$('tab-'+t).hidden=t!==tab;}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>showResultTab(b.dataset.tab));
 bind('catalog-new',()=>editCatalog(null));bind('editor-copy',()=>{state.editing=null;$('editor-title').textContent='复制为新条目';message('请修改名称后保存');});bind('editor-close',()=>$('editor').close());bind('detail-close',()=>$('detail-dialog').close());
-for(const page of ['analysis','hardware','platform'])bind('nav-'+page,async()=>{document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.id==='nav-'+page));$('analysis-page').hidden=page!=='analysis';$('catalog-page').hidden=page==='analysis';if(page!=='analysis'){state.kind=page;await catalogs();renderCatalog();}});
+for(const page of ['analysis','hardware','platform'])bind('nav-'+page,async()=>{showPage(page);if(page!=='analysis'){state.kind=page;await catalogs();await loadCatalogPage();}});
 $('assumptions').value=JSON.stringify({source_compute_efficiency:.6,target_compute_efficiency:.6,source_memory_efficiency:.7,target_memory_efficiency:.7,source_launch_us:3,target_launch_us:3},null,2);
 initEmpiricalActions();
 initWorkflow();
-(async()=>{try{const meta=await uploadLimits();state.empiricalDefaults=meta.empirical_defaults;state.engineVersion=meta.version;renderEmpiricalSettings();await catalogs();await jobs();const id=new URLSearchParams(location.search).get('job');if(id)await selectJob(id);workflowControls();}catch(e){message(e.message);}})();
+(async()=>{try{const meta=await uploadLimits();state.empiricalDefaults=meta.empirical_defaults;state.engineVersion=meta.version;renderEmpiricalSettings();await catalogs();state.emptyForm=captureForm();await jobs();const id=new URLSearchParams(location.search).get('job');if(id)await selectJob(id);workflowControls();}catch(e){message(e.message);workflowControls();}})();

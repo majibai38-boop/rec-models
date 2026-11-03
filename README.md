@@ -1,21 +1,41 @@
-<h1 align="center">GPU/NPU Profiling Workbench</h1>
+<h1 align="center">GPU/NPU Profiling 工具集</h1>
 
-<p align="center"><strong>上传两端 Profiling，定位性能差异，解释覆盖率缺口。</strong></p>
-<p align="center">PyTorch GPU × Ascend NPU · 本地分析 · Web / CLI / Skill · Excel 报告</p>
+<p align="center"><strong>Profiling Workbench 做双侧实测对比，Workload Modeler 做单侧画像与性能估算。</strong></p>
+<p align="center">PyTorch GPU × Ascend NPU · 本地处理 · 独立 Web 服务 · 可追溯报告</p>
 <p align="center">
+  <a href="#选择工具">选择工具</a> ·
   <a href="#界面演示">界面演示</a> ·
   <a href="#快速开始">快速开始</a> ·
-  <a href="#跑一个公开样例">公开样例</a> ·
-  <a href="#如何读懂结果">结果口径</a> ·
-  <a href="profiling_web/README.md">部署文档</a> ·
+  <a href="#workload-使用流程与结果">Workload 使用流程</a> ·
+  <a href="profiling_web/README.md">Profiling 文档</a> ·
+  <a href="workload_modeler/README.md">Workload 文档</a> ·
   <a href="LICENSE">Apache-2.0</a>
 </p>
 
-GPU 和 NPU 的 kernel 名称、数量、融合方式不同，直接按名字比较往往行不通。本工具从 **NPU kernel → CPU 调用 → GPU kernel** 建立关联，以 NPU 类型为主轴比较耗时，并把不能独立比较的工作保留为整体调用或未映射证据。
+本仓库提供两个可以分别启动的工具，分析机器均无需安装 GPU/NPU 硬件，Web 分析不调用外部 AI 服务。
 
-不需要在分析机器上安装 GPU/NPU 硬件；Web 分析不调用外部 AI 服务。它是采集后的对比工作台，不是 profiler 采集器，也不是自动证明两端模型等价的工具。
+## 选择工具
+
+| 对比项 | Profiling Workbench | Workload Modeler |
+|---|---|---|
+| 要解决的问题 | 两端已经实测：差在哪里，为什么没有对齐？ | 只有一端采集：换设备后可能怎样，哪些假设影响结果？ |
+| 输入 | GPU Trace + NPU Trace + NPU `kernel_details.csv` | GPU Trace；或 NPU Trace + 明细；也支持仅 NPU 明细 |
+| 主要能力 | kernel 对齐、类型/整体对比、Shape 分析、人工关联、覆盖率诊断 | 芯片与平台版本管理、Cube/Vector 画像、精细建模、整体经验估算 |
+| 比值口径 | 对应范围的 GPU 实测耗时 / NPU 实测耗时 | 源设备实测耗时 / 目标设备预测耗时 |
+| 主要输出 | 多页签 Excel、CSV、Markdown、JSON | 网页表格与图表、CSV、JSON、经验场景 JSON |
+| 默认地址 | `http://127.0.0.1:8000` | `http://127.0.0.1:8770` |
+| 服务与数据 | `profiling_web/`；`profiling_web/data/` | `workload_modeler/`；`workload_modeler/data/` |
+| 前端依赖 | Vue + ECharts，首次需 Node.js / pnpm 构建 | 原生静态页面，无需 Node.js 构建 |
+| 详细说明 | [Profiling 部署与操作](profiling_web/README.md) | [Workload 部署、模型与假设](workload_modeler/README.md) |
+
+两套服务可同时运行，任务和数据目录独立；共用解析能力及 `web_shared/` 界面主题，不会自动同步任务。**Workload 的预测倍率不能当作 Profiling 的双侧实测倍率。** 可先用 Workload 筛选迁移方案，再采集目标设备数据，用 Profiling 验证。
+
+GPU 和 NPU 的 kernel 名称、数量、融合方式不同，直接按名字比较往往行不通。Profiling Workbench 从 **NPU kernel → CPU 调用 → GPU kernel** 建立关联，以 NPU 类型为主轴比较耗时，并把不能独立比较的工作保留为整体调用或未映射证据。
+
 
 ## 界面演示
+
+以下演示为 **Profiling Workbench 双侧对比服务**；Workload 的输入和使用流程见下文独立说明。
 
 ![上传、范围确认、总体指标、类型对比和 Shape 图表的分步演示](docs/media/workbench-demo.gif)
 
@@ -53,9 +73,9 @@ GPU 和 NPU 的 kernel 名称、数量、融合方式不同，直接按名字比
 
 ## 快速开始
 
-以下命令在克隆后的仓库根目录运行。Web 验证环境为 **Python 3.12、Node.js 22、pnpm 11.25.0**；分析核心仅需 Python 3.9+ 标准库。
+以下命令在克隆后的仓库根目录运行。Profiling Web 验证环境为 **Python 3.12、Node.js 22、pnpm 11.25.0**；Profiling 分析核心仅需 Python 3.9+ 标准库。Workload 的依赖和启动命令单独列在下方。
 
-### 启动 Web
+### 启动 Profiling Workbench（8000）
 
 Windows PowerShell：
 
@@ -84,7 +104,29 @@ profiling_web/.venv/bin/python -m profiling_web
 
 Docker、局域网认证、资源限制与恢复方法见 [Web 部署文档](profiling_web/README.md)。服务定位为**单机、可信用户共享工作区**，不是多租户服务，不应直接暴露公网。
 
-### 完成第一次比较
+### 启动 Workload Modeler（8770）
+
+Python 3.10+，无需安装 Node.js 或构建前端。在仓库根目录创建独立环境：
+
+```powershell
+python -m venv workload_modeler/.venv
+workload_modeler/.venv/Scripts/python -m pip install -r workload_modeler/requirements.txt
+workload_modeler/.venv/Scripts/python -m workload_modeler --port 8770
+```
+
+Linux / macOS：
+
+```bash
+python3 -m venv workload_modeler/.venv
+workload_modeler/.venv/bin/python -m pip install -r workload_modeler/requirements.txt
+workload_modeler/.venv/bin/python -m workload_modeler --port 8770
+```
+
+打开 **http://127.0.0.1:8770**。服务仅监听本机、无需令牌；在终端按 `Ctrl+C` 停止。日常只需最后一条启动命令，历史任务保存在 `workload_modeler/data/`。部署时保留仓库中的 `profiling_tools/` 和 `web_shared/`；当前 Profiling 的 Docker 配置仅用于 Profiling 服务。
+
+上传上限默认 2 GiB/文件。大文件参数、备份、恢复和版本化规格管理见 [Workload README](workload_modeler/README.md)。
+
+### 完成第一次 Profiling 比较
 
 1. **新建任务**：填写能区分模型与采集条件的名称。
 2. **上传数据**：GPU trace JSON、NPU trace JSON、对应的 NPU `kernel_details.csv`。`op_statistic.csv` 不能替代 kernel 明细。
@@ -92,9 +134,27 @@ Docker、局域网认证、资源限制与恢复方法见 [Web 部署文档](pro
 4. **分析与查证**：先看类型对比，再进入算子详情、整体对比与覆盖率诊断。不要为了让覆盖率变高而强行关联。
 5. **导出报告**：下载多页签 Excel，或导出当前筛选的 CSV。需要改变范围时使用“复用输入，新建分析”。
 
+## Workload 使用流程与结果
+
+1. **确认设备**：在「芯片规格 / 平台配置」选择源设备与目标设备。内置 L20、950PR 标卡 28/32 Cube、A100 40/80GB PCIe/SXM、950DT 28/32/36 Cube；支持新建、修改、历史版本和 JSON 导入导出。规格来源与未确认参数见 [设备说明](workload_modeler/docs/device_presets.md)。
+2. **上传一端采集**：新建任务，选择 GPU 或 NPU 输入类型、源/目标平台与文件。点击主按钮自动上传；可开启「预检查范围」，检查 PID、Step 和设备后运行分析。
+3. **查看画像与估算**：先看设备整体、整步经验倍率，再检查算子折算、Cube/Vector 时间构成、精细建模覆盖率及未知原因。可调整经验假设预览结果，无需重新解析 Trace。
+4. **保存与管理**：下载 CSV / JSON 或导出经验场景；支持改名、复用输入、搜索和取消任务。任务、芯片、平台可移入回收站并恢复，历史结果继续保留分析时的规格快照。
+
+快速体验可上传 [GPU 合成样例](workload_modeler/examples/gpu_trace.json)，输入类型选 GPU，源平台选 L20、目标选 950PR，Step 选 `ProfilerStep#1`。也可使用 [NPU 明细样例](workload_modeler/examples/kernel_details.csv)，输入类型选 NPU、源/目标都选 950PR 32、Step 选 1。样例仅验证功能，不代表真实设备性能。
+
+| Workload 结果 | 怎么读 |
+|---|---|
+| 画像与亲和性初筛 | 统计算子与 Cube-like/Vector-like 构成；用于定位主导工作，不直接证明目标设备更快 |
+| 精细预测与覆盖率 | 仅对满足 Shape、dtype、规格和实现假设的调用建模；缺少证据的部分保留未知 |
+| 整体经验估算 | 按互斥时间类别与可编辑倍率折算全量设备时间；即使精细覆盖率低，也可输出带假设的场景 |
+| 整步预测 | 依赖 Step 窗口、重叠和间隙假设；设备 Duration 求和不等于整步墙钟耗时 |
+
+经验估算的保守/基准/乐观值表示假设敏感性，不是实测值或统计置信区间。当前仅支持单设备建模，不提供完整的多卡调度仿真。完整公式、边界与用法见 [Workload 文档](workload_modeler/README.md)。
+
 ## 跑一个公开样例
 
-不用准备业务数据，上传这三份文件即可体验：
+以下为 **Profiling 双侧对比样例**。不用准备业务数据，上传这三份文件即可体验：
 
 - [GPU trace](docs/demo/gpu.json)
 - [NPU trace](docs/demo/npu.json)
@@ -118,6 +178,8 @@ Docker、局域网认证、资源限制与恢复方法见 [Web 部署文档](pro
 查看 [样例说明与复现命令](docs/demo/README.md)。所有输入均为合成数据；不包含业务模型、用户目录或私有采集日志。
 
 ## 如何读懂结果
+
+本节口径适用于 **Profiling Workbench**；Workload 使用上文的源/目标预测口径。
 
 | 指标 | 含义 | 不意味着什么 |
 |---|---|---|
@@ -157,10 +219,9 @@ python -m profiling_tools query --result-dir result-demo --op-type Cast --limit 
 
 每次使用新的/空的输出目录。也可 `python -m pip install ./profiling_tools` 独立安装核心包。参数和错误码见 [CLI 文档](profiling_tools/README.md)。
 
-### Skill 与实验性建模
+### Skill
 
 - [gpu-npu-profiling Skill](skills/gpu-npu-profiling/)：封装输入契约、稳定命令、证据查询和排查流程，复用同一套引擎，不维护另一套算法。
-- [Workload Modeler](workload_modeler/README.md)：独立的单机建模 MVP，用于规格管理和假设下的耗时折算。预测不是双侧实测，不与本工作台的实测比较混为一谈。
 
 ## 常见问题
 
@@ -174,7 +235,11 @@ python -m profiling_tools query --result-dir result-demo --op-type Cast --limit 
 
 **可以只上传 GPU 数据预测 NPU 吗？**
 
-本工作台的实测比较需要三份输入。单侧估算请看独立的 Workload Modeler，结果受模型覆盖和规格假设限制。
+Profiling Workbench 的实测比较需要三份输入。单侧估算使用 [Workload Modeler](workload_modeler/README.md)，结果受模型覆盖和规格假设限制。
+
+**两个服务需要一起启动吗？**
+
+不需要。只做单侧画像和预测时启动 8770 的 Workload 即可；做双侧实测比较时启动 8000 的 Profiling。两者可并行，但同一服务的数据目录不要被多个实例同时打开。
 
 **上传很大的 Trace 会怎样？**
 
@@ -192,12 +257,21 @@ Web 回归测试使用已安装依赖的环境：
 profiling_web/.venv/Scripts/python -m unittest discover -s profiling_web/tests -v
 ```
 
+Workload 回归测试（`httpx` 用于 API 测试，Node.js 仅用于前端逻辑测试）：
+
+```powershell
+workload_modeler/.venv/Scripts/python -m pip install httpx
+workload_modeler/.venv/Scripts/python -m unittest discover -s workload_modeler/tests -v
+node --test workload_modeler/tests/workflow.test.cjs workload_modeler/tests/management.test.cjs
+```
+
 | 目录 | 职责 |
 |---|---|
 | `profiling_tools/` | 解析、对齐、时间记账、诊断与报告引擎 |
 | `profiling_web/` | 单机 API / Worker、Vue + ECharts 工作台 |
 | `skills/gpu-npu-profiling/` | 可分发 Skill |
-| `workload_modeler/` | 实验性规格管理与性能建模 |
+| `workload_modeler/` | 独立单机服务：规格/平台管理、单侧画像与性能估算 |
+| `web_shared/` | 两套 Web 服务共用的界面主题 |
 | `docs/demo/` / `docs/media/` | 公开样例、复现说明、真实界面演示 |
 
 反馈问题时请提供工具版本、两侧采集版本、选择范围和错误信息；优先提供最小可复现样例。公开提交前请移除模型名、路径、调用栈等敏感信息。

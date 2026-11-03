@@ -2,6 +2,8 @@
 
 复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，不调用外部 AI 服务。
 
+本服务用于 **GPU/NPU 双侧实测比较**，默认端口为 **8000**，输入为 GPU Trace、NPU Trace 与 NPU `kernel_details.csv`。如果只有一端采集、需要维护芯片规格或预测目标设备性能，请使用独立的 [Workload Modeler](../workload_modeler/README.md)（默认端口 **8770**）。两者任务与数据目录独立，Workload 的预测倍率不等同于本服务的实测 GPU/NPU 比值；完整对照见[仓库首页](../README.md#选择工具)。
+
 这是**单机、可信用户共享工作区**，不是多租户服务。本机免令牌模式下，本机其他进程及操作用户也能访问数据；令牌模式下，持有令牌的用户可以读取及删除所有任务。默认仅监听本机；不要直接暴露到公网。
 
 ## 本机启动
@@ -37,6 +39,8 @@ profiling_web/.venv/Scripts/python -m profiling_web all --port 8000 --data-dir p
 ```
 
 前端开发可运行 `pnpm --dir profiling_web/frontend dev`，Vite 将 `/api` 代理到本机 8000 端口。正式部署使用构建后的静态资源，无需运行 Node 服务。
+
+界面基础样式与 Workload Modeler 共用仓库 `web_shared/theme.css`。修改主题后需重新构建前端并刷新页面；Docker 构建已包含共享主题目录。两套工具保持独立任务、输入和统计口径，只统一视觉规范。
 
 ## 使用流程
 

@@ -2,24 +2,57 @@
 
 独立于现有 `profiling_web` 的单机 MVP（v0.4），复用仓库 `profiling_tools` 的 Trace 解析和 kernel 归属逻辑。不修改原始采集数据或外部 workload 工作簿。
 
+## 与 Profiling Workbench 的区别
+
+| | Workload Modeler（本服务） | [Profiling Workbench](../profiling_web/README.md) |
+|---|---|---|
+| 使用场景 | 单侧采集的画像、迁移初筛与假设下性能预测 | GPU/NPU 双侧采集的实测性能比较 |
+| 必需输入 | GPU Trace；或 NPU Trace + 明细；或仅 NPU 明细 | GPU Trace + NPU Trace + NPU 明细 |
+| 重点操作 | 管理芯片/平台、选择源与目标、编辑估算假设 | 对齐 kernel、查看类型/整体对比、诊断覆盖率、人工关联 |
+| 性能比 | 源实测时间 / 目标预测时间 | GPU 实测时间 / NPU 实测时间 |
+| 默认端口 / 数据目录 | 8770 / `workload_modeler/data/` | 8000 / `profiling_web/data/` |
+| 输出 | 网页结果、CSV、JSON、经验场景 JSON | Excel、CSV、Markdown、JSON |
+
+两套服务独立启动，任务不自动互通；仅复用解析能力和界面主题。单侧预测无需运行 Profiling 服务。取得目标设备实测后，可用 Profiling Workbench 验证估算结果。
+
 ## 启动
 
 在仓库根目录执行（Python 3.10+）：
 
 ```powershell
-python -m pip install -r workload_modeler/requirements.txt
-python -m workload_modeler --port 8770
+python -m venv workload_modeler/.venv
+workload_modeler/.venv/Scripts/python -m pip install -r workload_modeler/requirements.txt
+workload_modeler/.venv/Scripts/python -m workload_modeler --port 8770
 ```
 
-当前仓库已有环境，也可以直接使用：
+Linux / macOS：
+
+```bash
+python3 -m venv workload_modeler/.venv
+workload_modeler/.venv/bin/python -m pip install -r workload_modeler/requirements.txt
+workload_modeler/.venv/bin/python -m workload_modeler --port 8770
+```
+
+无需 Node.js、pnpm 或前端构建。部署时保留整个仓库，尤其是复用的 `profiling_tools/` 和 `web_shared/`。已有 Profiling 虚拟环境时，也可以复用它：
 
 ```powershell
+.\profiling_web\.venv\Scripts\python.exe -m pip install -r workload_modeler/requirements.txt
 .\profiling_web\.venv\Scripts\python.exe -m workload_modeler --port 8770
 ```
 
 浏览器访问 http://127.0.0.1:8770 。仅监听本机，无令牌；不支持直接对外网部署。数据默认存储在 `workload_modeler/data/`，可用 `--data-dir` 指定。不要对同一数据目录启动多个服务。停止服务后备份整个数据目录即可保留任务、规格和结果。
 
+后续启动只需执行环境对应的最后一条命令，按 `Ctrl+C` 停止。自定义数据目录示例：
+
+```powershell
+workload_modeler/.venv/Scripts/python -m workload_modeler --port 8770 --data-dir D:/workload-data
+```
+
+上传、数据库、任务结果和日志属于本机运行数据，不随源码提交。恢复备份时先停服务，再使用 `--data-dir` 指向已恢复的目录；不要把正在运行的 SQLite 数据库单文件复制作为完整备份。仓库中的 `profiling_web/Dockerfile` 仅部署 Profiling，本服务当前使用 Python 直接启动。
+
 ## 使用流程
+
+界面与 Profiling Workbench 共用浅色青绿主题、左侧任务栏、页签、表格和结果卡片；「模型分析 / 芯片规格 / 平台配置」均从左栏进入。共用样式位于仓库 `web_shared/theme.css`，部署时需保留该目录。升级本次界面后重启 Workload 服务并刷新页面即可，无需前端构建；历史数据和分析口径不变。
 
 1. 在「芯片规格」中查询、新建或修改规格。默认使用表单，单位固定；填写数值、证据类型、来源和稠密口径。未知值留空，不能填零占位。高级用户可切换 JSON；支持单条 JSON 导入预填和导出，导入后需明确保存才生效。
 2. 在「平台配置」中从下拉列表选择明确的芯片和版本（含历史版本），并填写 CPU、内存、软件版本、拓扑等条件。芯片修改不会自动升级平台引用。
@@ -28,6 +61,7 @@ python -m workload_modeler --port 8770
 5. 填写工作负载条件，检查「整体经验估算」假设（默认开启）及精细预测的效率、启动开销、精度模式，再运行分析。
 6. 顶部直接显示设备整体与整步经验倍率，并分别显示精细预测覆盖率与局部倍率。默认保留算子折算表；「整体经验估算」显示保守/基准/乐观耗时、倍率、互斥类别与折算依据。「画像与整步」保留画像和严格整步条件；「风险与假设」按耗时汇总精细模型缺口。
 7. 已完成任务可点击「调整经验假设」→「预览整体估算」，无需重新解析Trace；可导出当前经验场景JSON。预览不会改写原任务，刷新恢复保存/默认假设。若要保存完整新分析，使用「复用输入」，可预检查或确认原范围后直接运行。支持任务改名、取消和历史结果查看。
+8. 任务、芯片规格和平台均支持「移入回收站」与恢复。任务在左侧勾选「回收站」，规格/平台在对应页面勾选「回收站」。任务支持名称搜索和每页50项分页；规格/平台支持名称、厂商、CPU和备注搜索。
 
 已完成/运行中任务的输入表单只读（已完成任务的经验假设预览除外）；已完成任务会恢复展示该次 PID/Step/设备范围。任务名称仍可通过「修改名称」调整。单条 JSON 只传递条目本身，不包括任务数据或私有访问令牌。
 
@@ -41,8 +75,9 @@ NPU CSV 示例：新建任务，仅上传 `examples/kernel_details.csv`，输入
 
 | 功能 | 首版支持 |
 |---|---|
-| 规格库 | 硬件/平台表单、版本化修改、历史查看、单条 JSON 导入预填/导出、高级 JSON 编辑 |
-| 内置条目 | 950PR 标卡 28/32 Cube、L20；数值来源与未确认口径随条目保存 |
+| 规格库 | 硬件/平台表单、版本化修改、历史查看、单条 JSON 导入预填/导出、高级 JSON 编辑、搜索、回收站/恢复 |
+| 内置条目 | 950PR 标卡28/32、L20；A100 40/80GB PCIe/SXM；950DT 28/32/36 Cube；数值来源与未确认口径随条目保存 |
+| 任务管理 | 改名、复用输入、取消、搜索/分页、回收站/恢复，保留历史结果与配置快照 |
 | 输入 | GPU/NPU Trace、gzip；NPU kernel_details；PID/Step/device 范围检查 |
 | 画像 | 算子调用、kernel 数量、输入 Shape/dtype、Cube/Vector 类别、短kernel、FA/HSTU、未知占比及独立初筛 |
 | 解析模型 | mm/bmm/matmul 的有限维度组合；同 Shape add/sub/mul/relu |
@@ -52,9 +87,26 @@ NPU CSV 示例：新建任务，仅上传 `examples/kernel_details.csv`，输入
 | 严格整步预测 | 单设备、单流、无重叠、活动均在 Step 内、完全建模且主动确认固定间隙 |
 | 经验整步场景 | Step与忙碌时间完整、活动在Step内；允许多流，假设整体重叠比例不变，间隙独立折算 |
 
-尚未实现：Excel 自动导入、多卡通信模型、跨设备调度仿真、自动融合识别、自动双侧校准、自动采集硬件计数器。Server 规格可手工录入，不预填未经确认的数值。CPU/内存配置目前作为运行条件记录，不用于推断 CPU 耗时。
+尚未实现：Excel 自动导入、多卡通信模型、跨设备调度仿真、自动融合识别、自动双侧校准、自动采集硬件计数器、永久清空回收站。Server 条目只表示单设备建模范围，不预填未经确认的数值。CPU/内存配置目前作为运行条件记录，不用于推断 CPU 耗时。
 
 JSON 平台导出保留芯片 ID 与版本；导入到另一个数据库时需重新选择对应芯片版本，不自动按名称绑定。当前不是整个规格库的批量迁移接口。
+
+### 删除与恢复
+
+- 「移入回收站」仅隐藏条目，不删除上传文件、结果、历史规格版本或分析快照，也不释放磁盘空间；回收站数据仍计入10GiB软配额。本版没有永久清空入口。
+- 上传、预检查、分析中的任务不能删除；后台进程尚未退出时也拒绝删除。已删除任务必须先恢复，才能查看、下载、改名、复用输入或重跑。
+- 芯片被任一有效平台（包括固定旧芯片版本）引用时不能删除。先修改平台引用，或将相关平台移入回收站，再删除芯片。恢复顺序为先芯片、后平台。
+- 修改、删除、恢复规格/平台均校验版本，防止覆盖另一页面刚保存的变更；历史版本和分析结果始终使用原快照。
+- 已删除平台不能用于新分析；旧结果仍可查看。网页保留已删除平台的历史快照标签，不悄悄替换为其他平台。
+- 升级服务时，旧SQLite数据库自动增补回收站字段；新的内置设备只安装一次，不覆盖用户修改，也不会在重启时复活已删除条目。升级前建议停止服务并备份数据目录。
+
+这些回收站语义适用于 Workload。Profiling Workbench 原有「归档/永久删除」流程未改动，不要将两个工具的删除方式混淆。
+
+### 新增设备与规格口径
+
+详见 [设备来源与口径](docs/device_presets.md)。新增7种芯片及其单设备平台：A100 40/80GB PCIe/SXM和950DT 28/32/36 Cube，原L20、950PR条目保持不变。
+
+矩阵算力使用稠密峰值，不混用稀疏峰值，也不把Cube与Vector峰值相加。芯片卡片中的「规格来源与口径」可直接展开查看资料。A100主机信息因原表未明确SKU而不自动套用；950DT 28 Cube参考平台记录原工作簿主机配置，其余未确认参数留空。950DT显存容量没有明确的核数档位对应关系，仍为未知。
 
 ### 元数据与诊断边界
 
@@ -148,23 +200,26 @@ Step倍率 = 源Step / 目标Step
 大文件可根据本机可用内存调整后重启服务，例如：
 
 ```powershell
-python -m workload_modeler --port 8770 --upload-limit-mb 4096 --expanded-limit-mb 8192 --memory-mb 16384 --timeout 1800
+workload_modeler/.venv/Scripts/python -m workload_modeler --port 8770 --upload-limit-mb 4096 --expanded-limit-mb 8192 --memory-mb 16384 --timeout 1800
 ```
 
 参数容量单位为 MiB。上传采用流式落盘；JSON解析仍可能消耗远高于文件体积的内存。上传成功不代表可在内存或事件数限制内解析；优先使用 `.json.gz` 降低上传体积，必要时缩小原始采集范围。预检查会读取完整Trace，选择单个Step不会降低预检查阶段的内存需求。
 
-服务仅供可信本机使用，阻止跨站写入，不执行上传代码。Worker 并非操作系统安全沙箱。任务崩溃详情见对应目录 `worker.log`；重启后未完成任务标为失败，请复用输入。任务列表最多显示最近 200 项。结果查询为首版内存加载方案，不适合海量任务服务。
+服务仅供可信本机使用，阻止跨站写入，不执行上传代码。Worker 并非操作系统安全沙箱。任务崩溃详情见对应目录 `worker.log`；重启后未完成任务标为失败，请复用输入。任务列表按名称搜索、每页50项；API支持offset/limit分页（默认200项，不等于总数上限）。结果查询为首版内存加载方案，不适合海量任务服务。
 
 ## 开发与测试
 
 ```powershell
-python -m pip install httpx
-python -m unittest discover -s workload_modeler/tests -v
+workload_modeler/.venv/Scripts/python -m pip install httpx
+workload_modeler/.venv/Scripts/python -m unittest discover -s workload_modeler/tests -v
 node --test workload_modeler/tests/workflow.test.cjs
+node --test workload_modeler/tests/management.test.cjs
 ```
+
+Linux / macOS 将上述 Python 路径改为 `workload_modeler/.venv/bin/python`；Node.js 仅用于前端逻辑测试，服务运行不需要它。
 
 `schema.py` 定义输入合同；`store.py` 管理 SQLite 和不可变版本；`profile.py` 适配已有解析器；`features.py` 提取逻辑工作量并汇总结构化诊断；`screening.py` 提供独立画像初筛及三层结论；`empirical.py` 按互斥时间桶计算整体经验场景；`predict.py` 为精细建模引擎；`worker.py` 隔离运行、审计和导出；`app.py` 提供 API；`static/` 是不依赖前端构建的本地页面。
 
-回归测试覆盖：规格版本不可变、缺失规格保护、时间守恒与重叠、NPU CSV 分隔格式、原始元数据保留、输出Shape/dtype冲突、矩阵语义保护、原因桶全量守恒，以及上传/后台分析/导出端到端流程。
+回归测试覆盖：规格版本不可变、缺失规格保护、时间守恒与重叠、NPU CSV 分隔格式、原始元数据保留、输出Shape/dtype冲突、矩阵语义保护、原因桶全量守恒，以及上传/后台分析/导出端到端流程；另有回收站字节级保留、运行中保护、引用与恢复顺序、旧库迁移、预设幂等、分页/搜索和网页操作逻辑测试。
 
 下一阶段优先加入脱敏真实模型回归样本和双侧校准数据，再扩展广播/归约/Embedding/融合模型及 Excel 规格导入。覆盖率低时先完善模型与证据，不调整阈值来掩盖未知部分。

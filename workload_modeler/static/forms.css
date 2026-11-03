@@ -1,16 +1,16 @@
-.metric-editor {border:1px solid #dce2ea;border-radius:8px;margin:16px 0;padding:0 16px 10px}
-.metric-editor legend {font-weight:650;color:#285b87;padding:0 8px}
+.metric-editor {border:1px solid var(--ui-border);border-radius:8px;margin:16px 0;padding:0 16px 10px;min-width:0}
+.metric-editor legend {font-weight:650;color:var(--ui-primary-hover);padding:0 8px}
 .metric-editor .grid {margin:8px 0;gap:10px}
 #editor-fields > label {margin:16px 0}
 #editor .toolbar label {font-size:12px;max-width:300px}
 #editor .toolbar input {font-size:12px}
-.diagnostic {border:1px solid #dce2ea;border-radius:8px;padding:16px;margin:12px 0}
+.diagnostic {border:1px solid var(--ui-border);border-radius:8px;padding:16px;margin:12px 0}
 .diagnostic h3 {margin-top:0}
 .diagnostic .note {margin-bottom:6px}
-.diagnostic code {display:block;overflow-wrap:anywhere;font-size:12px;color:#66788a}
+.diagnostic code {display:block;overflow-wrap:anywhere;font-size:12px;color:var(--ui-muted)}
 #step-blockers {line-height:1.8}
 .assessment-layers {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}
-.assessment-card {border:1px solid #cddde9;border-top:3px solid #3976a5;border-radius:8px;padding:16px;line-height:1.7;display:flex;flex-direction:column;align-items:flex-start}
+.assessment-card {border:1px solid var(--ui-border);border-top:3px solid var(--ui-primary);border-radius:8px;padding:16px;line-height:1.7;display:flex;flex-direction:column;align-items:flex-start;min-width:0;overflow-wrap:anywhere}
 .assessment-card h3 {margin:0;font-size:15px}
 .assessment-card button {margin-top:auto}
 .historical-note {grid-column:1/-1;margin:0}

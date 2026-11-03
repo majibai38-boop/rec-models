@@ -176,8 +176,12 @@ class ModelerTests(unittest.TestCase):
 
     def test_catalog_api_versions_and_form_assets(self):
         with TestClient(create_app(self.root/'catalog',test_mode=True)) as client:
-            for name in ['catalog.js','diagnostics.js','assessment.js','workflow.js','forms.css']:
+            for name in ['catalog.js','diagnostics.js','assessment.js','workflow.js','forms.css','theme.css']:
                 self.assertEqual(client.get('/static/'+name).status_code,200)
+            theme=client.get('/static/theme.css')
+            self.assertTrue(theme.headers['content-type'].startswith('text/css'))
+            self.assertIn('--ui-primary',theme.text)
+            self.assertEqual(client.get('/static/README.md').status_code,404)
             hw=client.post('/api/catalog/hardware',json={'name':'  custom  ','vendor':'Other','metrics':{}}).json()
             self.assertEqual(hw['name'],'custom')
             payload={k:v for k,v in hw.items() if k not in {'id','created','revision'}}
