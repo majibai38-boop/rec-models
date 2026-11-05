@@ -1796,6 +1796,8 @@ def write_reports(
     manual_enabled=False,
 ) -> Dict[str, Any]:
     validate_threshold(diagnostic_coverage_threshold)
+    from .parameters import compare_parameter_candidates
+    parameter_report = compare_parameter_candidates(gpu, npu)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -2255,6 +2257,7 @@ def write_reports(
         },
         "gpu_accounting": gpu_accounting,
         "core_breakdown": core_breakdown,
+        "parameters": parameter_report,
         "precision_analysis": {
             **precision_diagnostics,
             "pattern_counts": dict(Counter(row["Pattern"] for row in precision_rows)),
@@ -2283,6 +2286,8 @@ def write_reports(
     from .pipeline_analysis import build_pipeline_report
     from .provenance import write_json
     pipeline_report = build_pipeline_report(npu, npu_kernel_mapping_rows)
+    write_json(output / 'parameter_estimates.json', parameter_report)
+    summary['reports'].append('parameter_estimates.json')
     write_json(output / 'npu_pipeline_analysis.json', pipeline_report)
     pipeline_rows = [dict(index=k['index'], name=k['name'], op_type=k['op_type'], device_id=k['device_id'],
                           core_type=k['core_type'], time_us=k['time_us'], category=k['pipeline']['category'],

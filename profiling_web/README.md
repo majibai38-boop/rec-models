@@ -219,3 +219,11 @@ profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1
 参考：[RmsNormQuant 优化案例](https://cann.csdn.net/6a15a2e910ee7a33f2755b2e.html)、[官方 No Bound 筛查](https://github.com/Ascend/msprof-analyze/blob/master/msprof_analyze/advisor/analyzer/computation/bound/operator_bound_checker.py)、[官方 Roofline 分析](https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_user_guide.md#roofline-bottleneck-analysis-chart)。本实现补充双侧核域、Fixpipe 和缺失值检查，不等同于官方检测器的逐项复刻。
 
 后续扩展边界：暂不支持断点上传、多用户隔离、跨任务缓存、跨轮对比和完整时间线查看。CLI/Skill 不依赖 Web 组件，原有调用方式不变。
+
+## 模型参数量画像
+
+结果总览的「模型参数量 · Trace Shape估算」并列展示NPU/GPU的候选参数合计、稠密权重、Embedding表和待确认矩阵右输入元素数。展开可切换设备查看Shape、dtype、模块、调用次数和去重依据；前100组在线显示，完整明细通过「更多输出 → parameter_estimates.json」下载。旧结果需复用输入重新分析。
+
+两端独立使用所选PID/Step范围内kernel的CPU owner及祖先，不以kernel是否匹配为条件。复用 `profiling_tools.parameters`，与Workload使用同一估算规则：Linear、卷积、Embedding和支持的归一化按权重角色识别，嵌套实现与重复Step去重；mm/bmm等可能为激活运算，独立列为待确认项，不加入合计。
+
+缺少模块/权重身份时，相同Shape的不同层可能合并，共享权重或精度副本可能重复；候选规模不是精确参数量或上下界。Embedding按完整表Shape计数，不是实际访问行数或稀疏梯度证明。两端候选差异可能来自CPU算子展开与元数据差异，不能据此判定模型不等价。不修改实测性能比、kernel映射和覆盖率统计。
