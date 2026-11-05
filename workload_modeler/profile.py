@@ -13,6 +13,7 @@ from profiling_tools import parser
 from profiling_tools.core_breakdown import category
 from profiling_tools.model import interval_union_us
 from .features import normalize_dtypes_json
+from .parameters import candidates
 
 MAX_EXPANDED_BYTES = 4096 * 1024**2
 MAX_EVENTS = 2_000_000
@@ -232,6 +233,11 @@ def analyze(directory, scope):
         raise ValueError(f"存在多个设备，必须明确选择：{devices}")
     chosen=scope.device or devices[0]
     records=[r for r in records if r["device"]==chosen]
+    parameter_summary = candidates(profile.ops, {
+        int(r['unit'].split(':')[1]) for r in records if r['unit'].startswith('op:')
+    }) if trace else candidates([], [])
+    if not trace:
+        parameter_summary['note'] = '仅有kernel明细，无法确认权重输入角色；需要含CPU算子Shape的Trace。'
     if len(records)>MAX_UNITS:
         raise ValueError("所选范围超过20万设备活动，请缩小Step范围")
     if len({r['id'] for r in records})!=len(records):
@@ -274,7 +280,7 @@ def analyze(directory, scope):
     if not serial:
         warnings.append("非单流串行活动或时间戳不完整：严格整步预测不可用；整体经验估算中的多流Step场景须另行检查边界与重叠比例假设")
     return dict(schema_version=1,side=scope.side,device=chosen,scope=scope.model_dump(),units=list(units.values()),
-        summary=dict(kernel_count=len(compute),compute_sum_us=compute_us,device_sum_us=total,busy_us=busy,
+        summary=dict(parameters=parameter_summary,kernel_count=len(compute),compute_sum_us=compute_us,device_sum_us=total,busy_us=busy,
             memory_sum_us=math.fsum(r["duration"] for r in records if r["kind"]=="memory"),
             communication_sum_us=math.fsum(r["duration"] for r in records if r["kind"]=="communication"),
             step_us=window[1]-window[0] if window else None,serial_step_eligible=serial and in_window,

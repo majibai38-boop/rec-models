@@ -157,6 +157,14 @@ Step倍率 = 源Step / 目标Step
 
 短kernel定义为单个计算kernel耗时小于5μs，不等同小Shape或已确认启动受限。FA/HSTU按调用名识别，其时间与Cube/Vector分类交叉，不能相加。Step未被设备活动覆盖的时间使用窗口内活动并集计算，不能直接认定为CPU调度开销。初筛阈值仅为经验规则，随结果保存；不使用旧工具的固定MNK访存阈值和缺失规格兜底规则。
 
+## Trace Shape 参数量画像
+
+新分析在「画像与整步」顶部显示参数量候选：稠密权重、Embedding表、候选合计和待确认矩阵右输入元素数。明细显示算子、角色、Shape、dtype、模块、元素数、调用次数和去重依据；完整数据随 `result.json` 的 `profile_summary.parameters` 导出。旧任务需「复用输入」重新分析。
+
+Linear、卷积、Embedding及支持的归一化CPU算子按权重/偏置入参位置取Shape乘积；仅分析所选PID、Step及设备kernel关联的CPU调用与祖先，跳过外层权重算子的内部重复实现。重复Step不按调用次数累计。同模块（若有）、算子族、角色、Shape和dtype的候选合并。没有模块信息时仅按Shape等字段去重，因此同Shape的不同层可能低估，共享权重、跨算子或多精度副本可能高估。这是候选规模，不是精确总参数量，也不是上下界。
+
+Embedding使用完整表的Shape，包含未访问的行；无法从索引Shape确定唯一激活行数，也不能由此判断梯度是否稀疏。普通mm/addmm/matmul/bmm可能是激活间运算，右输入规模独立列为待确认项，不加入参数候选合计。未采集分支、融合或外置权重、无Shape、CSV-only等场景保留未知；不把未识别显示成0。精确模型参数量需模型或state_dict提供唯一权重及共享关系。此画像不改变现有性能预测。
+
 ## 指标与预测口径
 
 - **设备总时间**：计算 kernel、内存活动和通信活动 Duration 求和；不是迭代墙钟时间。
@@ -214,6 +222,7 @@ workload_modeler/.venv/Scripts/python -m pip install httpx
 workload_modeler/.venv/Scripts/python -m unittest discover -s workload_modeler/tests -v
 node --test workload_modeler/tests/workflow.test.cjs
 node --test workload_modeler/tests/management.test.cjs
+node --test workload_modeler/tests/parameters.test.cjs
 ```
 
 Linux / macOS 将上述 Python 路径改为 `workload_modeler/.venv/bin/python`；Node.js 仅用于前端逻辑测试，服务运行不需要它。
