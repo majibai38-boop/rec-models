@@ -85,7 +85,36 @@ def catalog(gpu, npu, matches, rows):
                            'names': sorted({gpu.kernels[i].event.name for i in indices}),
                            'weak_owner': any(gpu.kernels[i].link_method not in {'external_id','runtime_correlation'} for i in indices),
                            **_metadata(gpu, owner)})
-    return {'targets': targets, 'candidates': candidates}
+    return {'targets': _device_groups(targets, npu, False),
+            'candidates': _device_groups(candidates, gpu, True)}
+
+
+def _device_groups(records, profile, gpu):
+    """Group only orphan kernels; no inferred CPU owner or chronological pairs."""
+    known, groups = [], defaultdict(list)
+    for record in records:
+        if record['cpu_index'] is not None:
+            known.append(record)
+            continue
+        key = (tuple(record['device_key']), tuple(record['names'])) if gpu else (
+            record['device_id'], record['op_type'], record['core_type'])
+        groups[key].append(record)
+    for members in groups.values():
+        indices = sorted({i for row in members for i in row['indices']})
+        kernels = [profile.kernels[i] for i in indices]
+        streams = Counter(k.stream_id or 'unknown' for k in kernels)
+        metadata = sorted({(k.detail.input_shapes, k.detail.input_dtypes)
+                           for k in kernels if k.detail is not None})
+        known.append({**members[0], 'id': ('gpu-group:' if gpu else 'npu-group:') + str(indices[0]),
+            'kernel_group': True, 'cpu_name': '无 CPU · kernel 整组',
+            'indices': indices, 'count': len(indices),
+            'time_us': sum(k.event.duration_us for k in kernels),
+            'names': sorted({k.event.name for k in kernels}),
+            'stream_counts': dict(streams), 'kernel_metadata': metadata,
+            'step_counts': dict(Counter(k.detail.step_id or 'unknown' if k.detail else 'unknown' for k in kernels)),
+            'owner_diagnosis': 'cpu_events_absent' if not profile.ops else 'owner_unresolved',
+            'metadata_source': 'NPU kernel_details' if not gpu else 'GPU kernel metadata unavailable'})
+    return known
 
 
 def _comparison_target(target, candidate):
@@ -96,6 +125,12 @@ def _comparison_target(target, candidate):
 
 
 def rank_candidate(target, candidate):
+    if target.get('kernel_group') and candidate.get('kernel_group'):
+        equal_count = target['count'] == candidate['count']
+        return {**candidate, 'rank_score': 10 if equal_count else 0,
+                'recommendation': '整组候选，需人工确认',
+                'reasons': ['数量相同，仅用于候选排序' if equal_count else '数量不同，可在确认等价后按整组比较'],
+                'warnings': ['缺少 CPU 语义证据，不按时间顺序逐次配对；核对全部 Step、shape 和工作范围']}
     comparison = _comparison_target(target, candidate)
     reasons, warnings = [], []
     score = 0

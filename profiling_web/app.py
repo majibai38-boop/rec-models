@@ -96,6 +96,7 @@ class ManualSeed(BaseModel):
 
 class ManualConfirmation(ManualSeed):
     reason: str = Field(min_length=1, max_length=500)
+    confirm_device_group: bool = False
 
 
 class ManualBatchSeed(ManualSeed):
@@ -465,7 +466,12 @@ def create_app(settings=None):
             candidate = manual_group(root/'index.sqlite','candidates',body.candidate_id)
         except ValueError as exc:
             raise HTTPException(422,str(exc)) from exc
+        if bool(target.get('kernel_group')) != bool(candidate.get('kernel_group')):
+            raise HTTPException(422, '无 CPU 整组关联需要两侧均选择 kernel 组')
+        if target.get('kernel_group') and not body.confirm_device_group:
+            raise HTTPException(422, '请明确确认两侧整个 kernel 组代表相同工作')
         link = {'id':uuid.uuid4().hex, 'npu_indices':target['indices'], 'gpu_indices':candidate['indices'],
+                'basis': 'manual_device_group' if target.get('kernel_group') else 'manual_confirmation',
                 'op_type':target['op_type'],'device_id':target['device_id'],'core_type':target['core_type'],
                 'reason':body.reason.strip(), 'created':time.time(), 'source_attempt':body.attempt,
                 'npu_time_us':target['time_us'], 'gpu_time_us':candidate['time_us']}
@@ -504,6 +510,8 @@ def create_app(settings=None):
                          device_id: str = Query('', max_length=200), core_type: str = Query('', max_length=200),
                          view: str = Query('groups', pattern='^(groups|units)$'),
                          group_id: str = Query('', max_length=120), unit_id: str = Query('', max_length=120),
+                         npu_kernel_name: str = Query('', max_length=4096),
+                         npu_name_ordinal: int | None = Query(None, ge=1),
                          search: str = Query('', max_length=200), sort: str = Query('npu_time', pattern='^(npu_time|ratio|position)$'),
                          offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=200),
                          attempt: str | None = Query(None, max_length=120)):
@@ -513,7 +521,8 @@ def create_app(settings=None):
             raise HTTPException(409, '结果版本已变化，请刷新任务后重新打开详情')
         try:
             return query_details(root / 'index.sqlite', op_type=op_type, device_id=device_id, core_type=core_type,
-                                 view=view, group_id=group_id, unit_id=unit_id, search=search, sort=sort, offset=offset, limit=limit)
+                                 view=view, group_id=group_id, unit_id=unit_id, search=search, sort=sort, offset=offset, limit=limit,
+                                 npu_kernel_name=npu_kernel_name, npu_name_ordinal=npu_name_ordinal)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

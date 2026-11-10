@@ -67,6 +67,17 @@ def signature(meta):
 
 
 def build_operator_details(gpu, npu, matches, rows):
+    # Event ordinals precede comparison grouping: manual bundles must not renumber
+    # their constituent kernels. Same names span streams, shapes and core types.
+    named, name_positions = defaultdict(list), {}
+    for i in sorted({int(r['NPU Kernel Index']) for r in rows}):
+        k = npu.kernels[i]
+        device = k.detail.device_id if k.detail and k.detail.device_id else 'pid:' + k.event.pid
+        named[device, k.event.name].append(i)
+    for indices in named.values():
+        indices.sort(key=lambda i: (npu.kernels[i].event.timestamp_us, npu.kernels[i].event.index, i))
+        for ordinal, i in enumerate(indices, 1):
+            name_positions[i] = {'index': ordinal, 'total': len(indices)}
     groups, users = defaultdict(list), defaultdict(set)
     match_by_id = {str(m.match_id): m for m in matches}
     for row in rows:
@@ -82,6 +93,8 @@ def build_operator_details(gpu, npu, matches, rows):
         op_type, device, core, gi, mi, _ = key
         ni = sorted(int(r['NPU Kernel Index']) for r in members)
         nk = [kernel_metadata(npu, i) for i in ni]
+        for k in nk:
+            k['name_position'] = name_positions[k['index']]
         gk = [kernel_metadata(gpu, i) for i in gi] + [kernel_metadata(gpu, i, True) for i in mi]
         owners_n = sorted({k['owner_index'] for k in nk if k['owner_index'] is not None})
         owners_g = sorted({k['owner_index'] for k in gk if k['owner_index'] is not None})

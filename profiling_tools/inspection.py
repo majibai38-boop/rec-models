@@ -46,8 +46,12 @@ def inspect_inputs(config, *, retain_data=False):
                     steps[event.pid].append(event)
             requested_pid = _normalized_id(getattr(config, side + "_pid"))
             requested_step = getattr(config, side + "_step")
-            if not by_pid:
-                raise ValueError(f"no CPU operators with prefix {config.op_prefix!r}")
+            cpu_absent = not by_pid
+            if cpu_absent:
+                issue('warnings', 'cpu_events_absent', side,
+                      'No selected CPU operators captured; device-only group comparison requires manual confirmation. Step boundaries without launch links may omit asynchronous work.')
+                for pid in sorted(steps) or ['__device_only__']:
+                    by_pid[pid] = []
             if requested_pid and requested_pid not in by_pid:
                 raise ValueError(f"requested PID {requested_pid} has no selected CPU operators")
             selected_pid = requested_pid or max(by_pid, key=lambda p: len(by_pid[p]))
@@ -64,13 +68,15 @@ def inspect_inputs(config, *, retain_data=False):
                 issue("selections_required", "step_scope_unspecified", side,
                       f"Specify --{side}-step or explicitly choose --all-steps (also required when no step markers exist).")
             selected_ops = [e for e in by_pid[selected_pid] if _event_in_window(e, window)]
-            if not selected_ops:
+            if not selected_ops and not cpu_absent:
                 raise ValueError("the selected CPU scope is empty")
             device_pids = _device_process_ids(events)
             kernels = [e for e in events if _is_complete_event(e) and _is_kernel(e, config.include_communication, device_pids)
                        and _event_in_window(e, window)]
             memory = [e for e in events if _is_complete_event(e) and e.category.lower() in {"gpu_memcpy", "gpu_memset"}
                       and _event_in_window(e, window)]
+            if cpu_absent and not kernels and not memory:
+                raise ValueError('No CPU operators or device activities in the selected scope')
             shapes = sum(get_arg(e.args, "Input Dims", "Input Shapes", "input_shapes") not in (None, "", "N/A") for e in selected_ops)
             dtypes = sum(get_arg(e.args, "Input type", "Input Types", "Input Data Types") not in (None, "", "N/A") for e in selected_ops)
             info = {

@@ -477,7 +477,10 @@ def _select_pid(events: Sequence[TraceEvent], op_prefix: str, requested_pid: str
         if _is_complete_event(event) and event.name.lower().startswith(op_prefix.lower()):
             counts[event.pid] += 1
     if not counts:
-        raise ValueError(f"No operator whose name starts with {op_prefix!r} was found")
+        step_pids = sorted({e.pid for e in events if _is_complete_event(e) and _is_step_event(e)})
+        if len(step_pids) > 1:
+            raise ValueError('Multiple step PIDs without CPU operators; select a PID explicitly')
+        return step_pids[0] if step_pids else '__device_only__'
     return max(counts.items(), key=lambda item: item[1])[0]
 
 

@@ -29,6 +29,37 @@ def case():
 
 
 class OperatorDetailsTest(unittest.TestCase):
+    def test_name_ordinals_are_event_based_and_lookup_is_scoped(self):
+        g,n,m,r = case()
+        n.kernels[1].event.name = 'different_kernel'
+        n.kernels[2].event.timestamp_us = n.kernels[0].event.timestamp_us
+        n.kernels[2].stream_id = '9'
+        n.kernels[3].detail.device_id = '1'
+        r[3]['Device_id'] = '1'
+        initial = build_operator_details(g,n,m,r)
+        positions = {k['index']: k['name_position'] for u in initial['units'] for k in u['npu_kernels']}
+        self.assertEqual(positions[0], {'index':1,'total':2})
+        self.assertEqual(positions[2], {'index':2,'total':2})
+        self.assertEqual(positions[1], {'index':1,'total':1})
+        self.assertEqual(positions[3], {'index':1,'total':1})
+        for row in (r[0],r[2]):
+            row.update({'GPU Kernel Indices':'[0]', 'Manual Link ID':'manual', 'Manual Reason':'confirmed'})
+        report = build_operator_details(g,n,m,list(reversed(r)))
+        self.assertEqual(positions,{k['index']:k['name_position'] for u in report['units'] for k in u['npu_kernels']})
+        with tempfile.TemporaryDirectory() as tmp:
+            source=Path(tmp)/'details.json'; index=Path(tmp)/'index.sqlite'
+            source.write_text(json.dumps(report),encoding='utf-8')
+            with closing(sqlite3.connect(index)) as db, db:
+                build_details_index(db,source)
+            result=query_details(index,op_type='Add',device_id='',core_type='AI_CORE',view='units',
+                                 npu_kernel_name='Add',npu_name_ordinal=2,sort='npu_time',limit=1)
+            self.assertEqual(result['total'],1)
+            self.assertEqual({k['index'] for k in result['items'][0]['npu_kernels']},{0,2})
+            self.assertEqual(query_details(index,op_type='Add',device_id='1',core_type='AI_CORE',view='units',
+                npu_kernel_name='Add',npu_name_ordinal=2)['total'],0)
+            self.assertEqual(query_details(index,op_type='Add',device_id='',core_type='AI_CORE',view='units',
+                npu_kernel_name="Add' OR 1=1 --",npu_name_ordinal=2)['total'],0)
+
     def test_pipeline_report_index_and_full_filter_partition(self):
         from profiling_tools.tests.test_pipeline_analysis import detail
         from profiling_web.index import query_index

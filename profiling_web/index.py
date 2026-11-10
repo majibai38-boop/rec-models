@@ -175,11 +175,15 @@ def manual_options(path, op_type, device_id, core_type, target_id='', search='',
                 for candidate, row in zip(all_candidates, rows):
                     if not row[1]:
                         continue
+                    if bool(candidate.get('kernel_group')) != bool(target.get('kernel_group')):
+                        continue
                     candidate_total += 1
                     yield rank_candidate(target, candidate)
             candidates = heapq.nsmallest(gpu_offset+limit,ranked(),key=lambda r:(-r['rank_score'],r['id']))[gpu_offset:]
             scopes = {}
             for candidate in candidates:
+                if candidate.get('kernel_group'):
+                    continue
                 name = candidate['cpu_name']
                 if name not in scopes:
                     scopes[name] = comparison_positions(all_targets, candidate)

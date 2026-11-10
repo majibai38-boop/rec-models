@@ -52,12 +52,18 @@ def build_details_index(db, path):
             core_type TEXT, npu_time REAL, position INTEGER, payload TEXT);
         CREATE INDEX detail_unit_group ON detail_units(group_id,position);
         CREATE INDEX detail_unit_type ON detail_units(op_type,device_id,core_type,position);
+        CREATE TABLE detail_kernel_names(name TEXT, ordinal INTEGER, unit_id TEXT);
+        CREATE INDEX detail_kernel_name_lookup ON detail_kernel_names(name,ordinal);
         CREATE TABLE detail_groups(id TEXT PRIMARY KEY, op_type TEXT, device_id TEXT, core_type TEXT,
             npu_time REAL, ratio REAL, search TEXT, payload TEXT);
         CREATE INDEX detail_group_type ON detail_groups(op_type,device_id,core_type,npu_time);
     ''')
     groups = defaultdict(list)
     for u in report['units']:
+        for kernel in u['npu_kernels']:
+            if kernel.get('name_position'):
+                db.execute('INSERT INTO detail_kernel_names VALUES(?,?,?)',
+                           (kernel['name'], kernel['name_position']['index'], u['id']))
         groups[u['group_id']].append(u)
         db.execute('INSERT INTO detail_units VALUES(?,?,?,?,?,?,?,?)',
                    (u['id'], u['group_id'], u['op_type'], u['device_id'], u['core_type'], u['npu_time_us'],
@@ -71,7 +77,8 @@ def build_details_index(db, path):
 
 
 def query_details(path, *, op_type, device_id, core_type, group_id='', unit_id='',
-                  search='', sort='npu_time', offset=0, limit=30, view='groups'):
+                  search='', sort='npu_time', offset=0, limit=30, view='groups',
+                  npu_kernel_name='', npu_name_ordinal=None):
     if offset < 0 or not 1 <= limit <= 200 or sort not in {'npu_time', 'ratio', 'position'} or view not in {'groups', 'units'}:
         raise ValueError('Invalid detail query')
     empty = {'supported': False, 'items': [], 'total': 0, 'has_more': False, 'offset': offset, 'limit': limit}
@@ -81,6 +88,13 @@ def query_details(path, *, op_type, device_id, core_type, group_id='', unit_id='
         table = 'detail_groups' if view == 'groups' else 'detail_units'
         where = 'op_type=? AND device_id=? AND core_type=?'
         params = [op_type, device_id, core_type]
+        if npu_kernel_name or npu_name_ordinal is not None:
+            if view != 'units' or not npu_kernel_name or type(npu_name_ordinal) is not int or npu_name_ordinal < 1:
+                raise ValueError('同名定位需要完整 NPU kernel 名称和从 1 开始的序号')
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='detail_kernel_names'").fetchone():
+                raise ValueError('旧结果不支持同名序号定位，请复用输入重新分析')
+            where += ' AND id IN (SELECT unit_id FROM detail_kernel_names WHERE name=? AND ordinal=?)'
+            params.extend([npu_kernel_name, npu_name_ordinal])
         if group_id:
             where += ' AND ' + ('id' if view == 'groups' else 'group_id') + '=?'
             params.append(group_id)

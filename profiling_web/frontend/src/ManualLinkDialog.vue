@@ -5,6 +5,8 @@ const emit = defineEmits(['close', 'submitted', 'upgrade'])
 const data = ref(null), selected = ref(''), targetId = ref(''), search = ref(''), reason = ref('')
 const loading = ref(false), saving = ref(false), error = ref(''), offset = ref(0), gpuOffset = ref(0), dialog = ref(null)
 const pendingUndo = ref('')
+const groupConfirmed = ref(false)
+watch(selected, () => { groupConfirmed.value = false })
 const batchPreview = ref(null), preparingBatch = ref(false)
 const batchIssue = ref(null)
 const confirmedTemplate = ref(false)
@@ -43,10 +45,12 @@ async function load(resetTarget = false) {
 }
 async function submit() {
   if (!candidate.value || !reason.value.trim() || saving.value || loading.value) return
+  if (target.value?.kernel_group && !groupConfirmed.value) return
   saving.value = true; error.value = ''
   try {
     const job = await props.api(`/jobs/${props.job.id}/manual-links`, 'POST', {
-      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, reason:reason.value.trim()})
+      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, reason:reason.value.trim(),
+      confirm_device_group:!!target.value?.kernel_group && groupConfirmed.value})
     emit('submitted', job)
   } catch(e) {error.value = e.message} finally {saving.value = false}
 }
@@ -124,6 +128,13 @@ onBeforeUnmount(() => {sequence++; batchSequence++; document.removeEventListener
           <p v-else>该类型没有可补充的 NPU kernel。</p>
           <div v-if="data.target_total > 20" class="pagination"><span>共 {{ data.target_total }} 组</span><button :disabled="saving || offset===0" @click="offset-=20;gpuOffset=0;load(true)">上一页 NPU</button><button :disabled="saving || offset+20>=data.target_total" @click="offset+=20;gpuOffset=0;load(true)">下一页 NPU</button></div>
           <div v-if="target" class="manual-target">
+            <section v-if="target.kernel_group" class="notice">
+              <strong>无 CPU 的 kernel 整组比较</strong>
+              <p>{{ target.owner_diagnosis === 'cpu_events_absent' ? '未采到选定前缀的 CPU 算子' : 'CPU 事件存在，但这些 kernel 的 owner 未解析' }}。当前组包含所选范围内同 NPU 类型、设备和 Core Type 的全部未关联 kernel。GPU 按设备及完整 kernel 名称分组。</p>
+              <p>NPU stream 分布：{{ target.stream_counts }}；Step 分布：{{ target.step_counts }}</p>
+              <details><summary>NPU kernel 输入 shape / dtype</summary><pre>{{ target.kernel_metadata }}</pre></details>
+              <p>数量相同只用于候选排序，不代表语义等价。耗时累加包含多 stream 并发重叠，不是单步实际耗时。</p>
+            </section>
             <p class="muted small">调用序号从 1 开始，按同模块、同调用结构、同线程/设备及 kernel 组成的待关联调用排序；搜索、翻页不改变序号。完成关联后的新结果会按剩余调用重新编号。序号相同仅供定位，不代表已对齐。</p>
             <p>NPU {{ callLabel(target) }} · {{ templateLabel(target) }}</p>
             <p>NPU #{{ target.indices.join(', ') }} · 模块 {{ target.module || '未知' }} · {{ fmt(target.time_us) }} μs</p>
@@ -139,6 +150,7 @@ Dtype: {{ JSON.stringify(target.dtypes) }}</pre></details>
               <p v-if="r.npu_comparison_scope">对应比较范围：NPU {{ r.npu_comparison_scope.cpu_name }} · {{ callLabel(r.npu_comparison_scope) }} · {{ templateLabel(r.npu_comparison_scope) }}</p>
               <p>GPU #{{ r.indices.join(', ') }} · {{ r.count }} kernels · {{ fmt(r.time_us) }} μs · {{ r.module || '模块未知' }}</p>
               <p>{{ r.reasons.join('；') }}</p><p v-if="r.warnings.length" class="notice">{{ r.warnings.join('；') }}，请人工核实。</p>
+              <p v-if="r.kernel_group">GPU stream 分布：{{ r.stream_counts }}；shape/dtype 未采集，保留未知。</p>
               <details><summary>kernel 名称与元数据</summary><pre>{{ r.names.join('\n') }}
 Shape: {{ JSON.stringify(r.shapes) }}
 Dtype: {{ JSON.stringify(r.dtypes) }}</pre></details>
@@ -151,13 +163,14 @@ Dtype: {{ JSON.stringify(r.npu_comparison_scope.dtypes) }}</pre></details>
             <template v-if="candidate">
               <h3>3. 确认关联</h3><p>新增可比 NPU 时间 {{ fmt(target.time_us) }} μs；分配 GPU 时间 {{ fmt(candidate.time_us) }} μs。预计类型覆盖率 {{ coverage }}，所选整组 GPU/NPU 比值 {{ target.time_us ? fmt(candidate.time_us/target.time_us) : '—' }}。TOTAL 不变。</p>
               <label>确认理由<textarea v-model="reason" maxlength="500" placeholder="例如：已核对两侧 index_add_ 调用，NPU 仅多一层内部调用" :disabled="saving" /></label>
-              <label><input v-model="confirmedTemplate" type="checkbox" :disabled="saving"> 按人工确认模板扩展（允许两侧 shape / dtype / 参数数量不同）</label>
+              <label v-if="!target.kernel_group"><input v-model="confirmedTemplate" type="checkbox" :disabled="saving"> 按人工确认模板扩展（允许两侧 shape / dtype / 参数数量不同）</label>
+              <label v-else><input v-model="groupConfirmed" type="checkbox" :disabled="saving"> 已核对整个采集范围内两组代表相同工作；仅比较整组，不按调用顺序逐次配对。</label>
               <template v-if="confirmedTemplate">
                 <label>扩展范围<select v-model="allTemplates" :disabled="saving" aria-label="批量扩展范围"><option :value="false">当前 shape/dtype 模板</option><option :value="true">同模块全部模板（跨 shape/dtype）</option></select></label>
                 <p v-if="allTemplates" class="notice">将同模块、同调用结构下的所有模板合并预览，可覆盖当前分析范围内的多个 step。请核实它们代表相同工作；优先使用完整唯一的 CPU 对应，其余要求两侧调用顺序和重复模板关系一致。</p>
                 <p v-else class="notice">请核实当前一对代表相同工作。仅扩展与所选 NPU、GPU 各自元数据一致的重复调用；优先使用完整唯一的 CPU 对应，其余按调用顺序配对。选择位置不符时会提供对应候选。</p>
               </template>
-              <div class="toolbar"><button :disabled="saving || !reason.trim()" @click="submit">{{ saving ? '提交中…' : '仅确认当前组' }}</button><button class="primary" :disabled="saving || preparingBatch" @click="previewBatch">{{ preparingBatch ? '正在生成预览…' : '预览同类批量关联' }}</button></div>
+              <div class="toolbar"><button :disabled="saving || !reason.trim() || (target.kernel_group && !groupConfirmed)" @click="submit">{{ saving ? '提交中…' : target.kernel_group ? '确认全部 kernel 整组并更新报告' : '仅确认当前组' }}</button><button v-if="!target.kernel_group" class="primary" :disabled="saving || preparingBatch" @click="previewBatch">{{ preparingBatch ? '正在生成预览…' : '预览同类批量关联' }}</button></div>
               <section v-if="batchIssue?.suggested_candidate" class="manual-candidate" aria-label="批量候选修正">
                 <p>当前 NPU 是{{ allTemplates ? '同模块' : '同模板' }}第 {{ batchIssue.position.npu }} / {{ batchIssue.position.total }} 次；所选 GPU 是第 {{ batchIssue.position.gpu }} 次。建议改选第 {{ batchIssue.position.paired_gpu }} 次：{{ batchIssue.suggested_candidate.cpu_name }} · CPU #{{ batchIssue.suggested_candidate.cpu_index }} · {{ batchIssue.suggested_candidate.count }} kernels。</p>
                 <button class="primary" :disabled="saving || preparingBatch" @click="useSuggestedCandidate">改选对应 GPU 调用并重新预览</button>
