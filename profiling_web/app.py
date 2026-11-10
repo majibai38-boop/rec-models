@@ -319,6 +319,29 @@ def create_app(settings=None):
                 db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
             return {"deleted": job_id}
 
+    @app.get("/api/jobs/{job_id}/inputs/{role}")
+    def original_input(job_id: str, role: str):
+        if role not in INPUTS:
+            raise HTTPException(404, "未知文件角色")
+        job = store.get(job_id)
+        info = (job.get("inputs") or {}).get(role)
+        if job["uploading"]:
+            raise HTTPException(409, "文件正在上传，请完成后下载")
+        if not info:
+            raise HTTPException(404, "原始输入尚未上传")
+        directory = store.path(job_id) / "inputs"
+        path = directory / INPUTS[role]
+        if directory.is_symlink() or path.is_symlink() or not path.is_file():
+            raise HTTPException(404, "原始输入不存在")
+        if path.stat().st_size != info['size']:
+            raise HTTPException(409, "原始输入大小已改变，请核对服务器文件")
+        name = str(info.get('name') or INPUTS[role]).replace('\\', '/').split('/')[-1]
+        name = ''.join(c for c in name if c.isprintable())[:200]
+        if name in {'', '.', '..'}:
+            name = INPUTS[role]
+        # Original uploads must remain byte-for-byte intact, including CSV cells.
+        return FileResponse(path, filename=name, media_type="application/octet-stream")
+
     @app.put("/api/jobs/{job_id}/inputs/{role}")
     async def upload(job_id: str, role: str, request: Request):
         if role not in INPUTS:

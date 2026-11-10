@@ -21,7 +21,7 @@ const kinds = {dense:'稠密',embedding:'Embedding',ambiguous:'待确认矩阵'}
       <details>
         <summary>查看候选 Shape 明细</summary>
         <label>查看设备 <select v-model="selected" aria-label="参数量设备"><option value="npu">NPU</option><option value="gpu">GPU</option></select></label>
-        <p class="muted small">PID {{ data[selected].selection.pid }} · Step {{ data[selected].selection.step || '全范围' }} · {{ data[selected].groups.length }} 组 · 缺少有效权重Shape的候选调用 {{ data[selected].missing_shape_calls }} 次。最多展示前100组，完整明细见“更多输出”中的 parameter_estimates.json。</p>
+        <p class="muted small">PID {{ data[selected].selection.pid }} · Step {{ data[selected].selection.step || '全范围' }} · {{ data[selected].groups.length }} 组 · 缺少有效权重Shape的候选调用 {{ data[selected].missing_shape_calls }} 次。最多展示前100组，完整明细保存在服务器本次报告的 parameter_estimates.json 中。</p>
         <div class="table-scroll"><table>
           <thead><tr><th>类别</th><th>算子 / 角色</th><th>Shape</th><th>dtype</th><th>模块</th><th>元素数</th><th>调用次数</th><th>去重依据</th></tr></thead>
           <tbody><tr v-for="(row,i) in data[selected].groups.slice(0,100)" :key="selected+':'+i">

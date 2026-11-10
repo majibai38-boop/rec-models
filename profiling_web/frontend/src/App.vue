@@ -7,6 +7,7 @@ import EvidenceDrawer from './EvidenceDrawer.vue'
 import ManualLinkDialog from './ManualLinkDialog.vue'
 import CoreBreakdown from './CoreBreakdown.vue'
 import ParameterSummary from './ParameterSummary.vue'
+import { visibleDownloads, inputDownloads } from './downloads.js'
 import OperatorDetails from './OperatorDetails.vue'
 import { cleanView, readLocation, viewQuery, readSavedViews, csvCell, normalizeStep } from './viewState.js'
 const logged = ref(false), token = ref(''), error = ref(''), busy = ref(false), config = ref({})
@@ -85,9 +86,11 @@ const errorAdvice=computed(()=>{
  return e.includes('内存')?'缩小采集范围或提高内存限制，然后重试。':e.includes('超时')||e.includes('运行时间')?'缩小输入或提高超时限制，然后重试。':e.includes('存储')||e.includes('配额')?'在任务列表删除不再需要的数据，再重试。':e.includes('输入')||e.includes('预检查')?'检查预检查提示；输入错误时新建任务上传修正文件。':'检查输入和比较范围。重试会保留旧运行目录；原始错误仅保存在服务器日志。'
 })
 const roles = [{ key: 'gpu_trace', title: 'GPU trace', hint: 'PyTorch profiler · JSON', accept: '.json' }, { key: 'npu_trace', title: 'NPU trace', hint: 'Ascend trace_view · JSON', accept: '.json' }, { key: 'npu_kernel_details', title: 'NPU kernel details', hint: 'kernel_details · CSV', accept: '.csv' }]
-const labels = { uploading: '等待上传', queued: '排队中', running: '分析中', needs_selection: '等待确认范围', succeeded: '分析完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', inspection: '输入预检查', gpu_parse: '解析 GPU trace', npu_parse: '解析 NPU trace', detail_link: '关联 NPU 明细', matching: '匹配 CPU / kernel', reports: '生成报告', validation: '校验计时与映射', indexing: '构建查询索引', starting: '启动分析进程' }
+const labels = { uploading: '等待上传', queued: '排队中', running: '分析中', needs_selection: '等待确认范围', succeeded: '分析完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', inspection: '校验输入 / 预检查', cache_load: '检查可复用的解析结果', cache_write: '保存解析缓存', reuse_exports: '复用 Step 下载文件', exports: '导出 Step 数据', gpu_parse: '解析 GPU trace', npu_parse: '解析 NPU trace', detail_link: '关联 NPU 明细', matching: '匹配 CPU / kernel', reports: '生成报告', validation: '校验计时与映射', indexing: '构建查询索引', starting: '启动分析进程' }
 const tabs = [['overview', '类型对比'], ['operator', '算子详情'], ['whole', '整体对比'], ['coverage', '覆盖率诊断'], ['calls', '调用明细'], ['distribution', '耗时分布']]
 const summary = computed(() => job.value?.summary)
+const moreDownloads = computed(() => visibleDownloads(summary.value?.reports))
+const originalDownloads = computed(() => inputDownloads(job.value?.inputs))
 const overall = computed(() => summary.value?.overall_statistics?.[0])
 const active = computed(() => ['running', 'queued'].includes(job.value?.status))
 const selectable = computed(() => job.value?.inspection && ['needs_selection', 'failed', 'cancelled', 'interrupted'].includes(job.value?.status))
@@ -233,7 +236,7 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
         <section v-if="['failed', 'cancelled', 'interrupted'].includes(job.status) && !job.inspection" class="panel"><p>可重试预检查。若原始输入有误，请新建任务上传修正后的文件。</p><button @click="action(async () => { job = await api(`/jobs/${job.id}/inspect`, 'POST') })">重试预检查</button></section>
         <template v-if="job.status === 'succeeded' && summary">
           <p class="notice">全任务比较范围（不随下方筛选改变）：GPU PID {{ job.options.gpu_pid || '自动选择' }} / {{ job.options.all_steps ? '完整采集' : job.options.gpu_step }}；NPU PID {{ job.options.npu_pid || '自动选择' }} / {{ job.options.all_steps ? '完整采集' : job.options.npu_step }}。耗时图沿用类型表的当前筛选条件。</p>
-          <div class="result-meta"><span class="tag success">✓ {{ summary.saved_validation?.checks_run }} 项校验通过</span><span class="muted">引擎 {{ summary.producer?.version }} · {{ summary.status === 'complete_with_gaps' ? '已完成，仍有覆盖缺口' : '已完成' }}</span><a class="button primary" :href="download('npu_gpu_op_statistic.xlsx')">↓ 下载 Excel</a><details class="downloads"><summary>更多输出</summary><a v-for="file in summary.reports" :key="file" :href="download(file)">{{ file }}</a></details></div>
+          <div class="result-meta"><span class="tag success">✓ {{ summary.saved_validation?.checks_run }} 项校验通过</span><span class="muted">引擎 {{ summary.producer?.version }} · {{ summary.status === 'complete_with_gaps' ? '已完成，仍有覆盖缺口' : '已完成' }}</span><a class="button primary" :href="download('npu_gpu_op_statistic.xlsx')">↓ 下载 Excel</a><details class="downloads"><summary>原始输入</summary><p class="muted small">上传时的完整文件，不按 Step 筛选。</p><a v-for="input in originalDownloads" :key="input.role" :href="`/api/jobs/${job.id}/inputs/${input.role}`">{{ input.label }} · {{ input.name }}</a><p v-if="!originalDownloads.length" class="muted">暂无上传文件。</p></details><details class="downloads"><summary>更多输出</summary><a v-for="[file,label] in moreDownloads" :key="file" :href="download(file)">{{ label }} · {{ file }}</a><p v-if="moreDownloads.length===0" class="muted">旧报告尚无精简导出，请复用输入重新分析。</p></details></div>
           <div v-if="tab!=='operator'" class="metrics"><article><span>NPU 总时间</span><strong>{{ fmt(overall?.npu_total_time_us) }}<small> μs</small></strong><p>kernel_details-backed</p></article><article><span>GPU 总时间</span><strong>{{ fmt(overall?.gpu_total_time_us) }}<small> μs</small></strong><p>计算 kernel + 内存活动，去重</p></article><article><span>Comparable Ratio · GPU/NPU</span><strong :class="ratioClass(overall?.comparable_ratio_gpu_npu)">{{ fmt(overall?.comparable_ratio_gpu_npu, 3) }}<small> ×</small></strong><p>对应可比子集，不包含所有工作</p></article><article><span>Total Time Ratio · GPU/NPU</span><strong :class="ratioClass(overall?.total_time_ratio_gpu_npu)">{{ fmt(overall?.total_time_ratio_gpu_npu, 3) }}<small> ×</small></strong><p>总体范围比较，非等价工作量证明</p></article></div>
           <CoreBreakdown v-if="tab!=='operator'" :data="summary.core_breakdown" />
           <ParameterSummary v-if="tab!=='operator'" :data="summary.parameters" />
