@@ -28,7 +28,7 @@
 | 前端依赖 | Vue + ECharts，首次需 Node.js / pnpm 构建 | 原生静态页面，无需 Node.js 构建 |
 | 详细说明 | [Profiling 部署与操作](profiling_web/README.md) | [Workload 部署、模型与假设](workload_modeler/README.md) |
 
-两套服务可同时运行，任务和数据目录独立；共用解析能力及 `web_shared/` 界面主题，不会自动同步任务。**Workload 的预测倍率不能当作 Profiling 的双侧实测倍率。** 可先用 Workload 筛选迁移方案，再采集目标设备数据，用 Profiling 验证。
+两套服务支持单服务器部署、多机通过IP访问，可用 `--host 0.0.0.0 --auth token` 开启令牌认证，或用 `--auth none` 明确关闭认证；详见 [局域网配置](profiling_web/README.md#局域网多机访问单服务器部署)。两套服务可同时运行，任务和数据目录独立；共用解析能力及 `web_shared/` 界面主题，不会自动同步任务。**Workload 的预测倍率不能当作 Profiling 的双侧实测倍率。** 可先用 Workload 筛选迁移方案，再采集目标设备数据，用 Profiling 验证。
 
 GPU 和 NPU 的 kernel 名称、数量、融合方式不同，直接按名字比较往往行不通。Profiling Workbench 从 **NPU kernel → CPU 调用 → GPU kernel** 建立关联，以 NPU 类型为主轴比较耗时，并把不能独立比较的工作保留为整体调用或未映射证据。
 
@@ -122,7 +122,7 @@ workload_modeler/.venv/bin/python -m pip install -r workload_modeler/requirement
 workload_modeler/.venv/bin/python -m workload_modeler --port 8770
 ```
 
-打开 **http://127.0.0.1:8770**。服务仅监听本机、无需令牌；在终端按 `Ctrl+C` 停止。日常只需最后一条启动命令，历史任务保存在 `workload_modeler/data/`。部署时保留仓库中的 `profiling_tools/` 和 `web_shared/`；当前 Profiling 的 Docker 配置仅用于 Profiling 服务。
+打开 **http://127.0.0.1:8770**。服务默认仅监听本机、无需令牌；在终端按 `Ctrl+C` 停止。日常只需最后一条启动命令，历史任务保存在 `workload_modeler/data/`。部署时保留仓库中的 `profiling_tools/` 和 `web_shared/`；当前 Profiling 的 Docker 配置仅用于 Profiling 服务。
 
 上传上限默认 2 GiB/文件。大文件参数、备份、恢复和版本化规格管理见 [Workload README](workload_modeler/README.md)。
 

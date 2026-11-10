@@ -12,7 +12,7 @@ function showPage(page){
 const fmt=(v,n=2)=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:n});
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 function message(text){$('message').textContent=text;$('message').hidden=!text;}
-async function api(path,options={}){const response=await fetch(path,{...options,headers:{...(options.body&&typeof options.body==='string'?{'Content-Type':'application/json'}:{}),...options.headers}});let data;try{data=await response.json();}catch{data={detail:response.statusText};}if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data));return data;}
+async function api(path,options={}){const response=await fetch(path,{...options,headers:{...(options.body&&typeof options.body==='string'?{'Content-Type':'application/json'}:{}),...options.headers}});if(response.status===401)showLogin();let data;try{data=await response.json();}catch{data={detail:response.statusText};}if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data));return data;}
 const post=(path,data={})=>api(path,{method:'POST',body:JSON.stringify(data)});
 function bind(id,handler){$(id).addEventListener('click',async()=>{message('');try{await handler();}catch(e){message(e.message);}});}
 function option(select,value,text){const n=node('option',text);n.value=value;select.append(n);}
@@ -130,4 +130,22 @@ for(const page of ['analysis','hardware','platform'])bind('nav-'+page,async()=>{
 $('assumptions').value=JSON.stringify({source_compute_efficiency:.6,target_compute_efficiency:.6,source_memory_efficiency:.7,target_memory_efficiency:.7,source_launch_us:3,target_launch_us:3},null,2);
 initEmpiricalActions();
 initWorkflow();
-(async()=>{try{const meta=await uploadLimits();state.empiricalDefaults=meta.empirical_defaults;state.engineVersion=meta.version;renderEmpiricalSettings();await catalogs();state.emptyForm=captureForm();await jobs();const id=new URLSearchParams(location.search).get('job');if(id)await selectJob(id);workflowControls();}catch(e){message(e.message);workflowControls();}})();
+async function initialize(){try{const meta=await uploadLimits();state.empiricalDefaults=meta.empirical_defaults;state.engineVersion=meta.version;renderEmpiricalSettings();await catalogs();state.emptyForm=captureForm();await jobs();const id=new URLSearchParams(location.search).get('job');if(id)await selectJob(id);workflowControls();}catch(e){message(e.message);workflowControls();}}
+
+function showLogin(){
+  clearInterval(state.poll);
+  $('login-panel').hidden=false;
+  for(const id of ['analysis-page','catalog-page']){const el=$(id);if(el)el.hidden=true;}
+}
+$('login-form').onsubmit=async event=>{
+  event.preventDefault();$('login-error').textContent='';
+  try{await post('/api/session',{token:$('access-token').value});$('access-token').value='';location.reload();}
+  catch(e){$('login-error').textContent=e.message;}
+};
+bind('logout',async()=>{await api('/api/session',{method:'DELETE'});location.reload();});
+(async()=>{try{
+  const auth=await api('/api/auth');
+  $('access-mode').textContent=auth.auth_mode==='token'?'令牌认证 · 共享工作区':auth.auth_mode==='none'?'免令牌 · 共享工作区':'本机免令牌';
+  $('logout').hidden=auth.auth_mode!=='token';
+  await initialize();
+}catch(e){message(e.message);}})();

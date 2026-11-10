@@ -30,7 +30,7 @@ Get-Content profiling_web/data/access-token
 
 Linux 使用相同流程，将 `profiling_web/.venv/Scripts/python` 换成 `profiling_web/.venv/bin/python`。也可以通过 `PROFILING_WEB_TOKEN` 提供至少 24 字符的私有随机令牌，此时不会生成令牌文件。数据目录应只对运行服务的系统用户开放，尤其是 Windows 上应检查目录 ACL。
 
-`--auth local` 只允许监听 `127.0.0.1`、`localhost` 或 `::1`；同时检查实际客户端地址、Host 和写请求 Origin，拒绝转发头，不信任代理提供的客户端地址。不能通过把监听地址改成 `0.0.0.0` 来关闭认证。局域网、反向代理与 Docker Compose 仍使用令牌模式。
+`--auth local` 只允许监听 `127.0.0.1`、`localhost` 或 `::1`；同时检查实际客户端地址、Host 和写请求 Origin，拒绝转发头，不信任代理提供的客户端地址。不能通过把监听地址改成 `0.0.0.0` 来关闭认证。局域网可显式使用 `--auth none`；Docker Compose 默认仍使用令牌模式，参见文末局域网配置。
 
 `all`（默认）启动一个 API 进程和一个独立 Worker，Ctrl+C 停止。可分别运行 `python -m profiling_web serve` 与 `python -m profiling_web worker`，但必须使用相同的数据目录与配置；每个数据目录只允许一个 API 和一个 Worker。
 
@@ -157,7 +157,7 @@ docker compose --env-file profiling_web/.env -f profiling_web/compose.yaml down
 
 并发固定为 1；每次分析使用独立子进程。RSS/目录配额是定期采样的保护，不是硬隔离，瞬时峰值可能超限。Docker 额外限制 API 内存 1 GiB、Worker 默认 10 GiB。解析器仍会完整加载 JSON，较大 trace 需要提高资源限制或缩小采集范围；预检查和正式分析会分别读取输入。
 
-需要局域网访问时，必须显式设置令牌、监听地址和允许的 Host。建议通过 HTTPS 反向代理，正确保留原始 Host/协议并仅信任指定代理。当前没有多用户权限、登录限流和公网防护，不应将它视为可直接公网部署的产品。
+局域网访问可选择令牌或显式免令牌模式，具体命令见文末。建议通过 HTTPS 反向代理，正确配置原始 Host/协议及代理信任；Profiling令牌模式保留原有Uvicorn代理支持，免令牌模式禁用转发头信任。当前没有多用户权限、登录限流和公网防护，不应将它视为可直接公网部署的产品。
 
 ## 数据、恢复与安全
 
@@ -227,3 +227,31 @@ profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1
 两端独立使用所选PID/Step范围内kernel的CPU owner及祖先，不以kernel是否匹配为条件。复用 `profiling_tools.parameters`，与Workload使用同一估算规则：Linear、卷积、Embedding和支持的归一化按权重角色识别，嵌套实现与重复Step去重；mm/bmm等可能为激活运算，独立列为待确认项，不加入合计。
 
 缺少模块/权重身份时，相同Shape的不同层可能合并，共享权重或精度副本可能重复；候选规模不是精确参数量或上下界。Embedding按完整表Shape计数，不是实际访问行数或稀疏梯度证明。两端候选差异可能来自CPU算子展开与元数据差异，不能据此判定模型不等价。不修改实测性能比、kernel映射和覆盖率统计。
+
+## 局域网多机访问（单服务器部署）
+
+两套服务都支持 `--host 0.0.0.0 --auth token`（共享令牌）或 `--auth none`（明确关闭令牌）。默认仍只监听127.0.0.1；`auto`在本机自动免令牌，在非回环地址要求令牌。`local`始终只允许本机。多个浏览器访问同一套任务与配置，计算在服务器执行，不是分布式执行或用户隔离。
+
+服务器 PowerShell，在仓库根目录运行：
+
+```powershell
+# 免令牌：仅用于可信局域网
+profiling_web/.venv/Scripts/python -m profiling_web --host 0.0.0.0 --port 8000 --auth none
+# Workload可在另一个终端启动
+profiling_web/.venv/Scripts/python -m workload_modeler --host 0.0.0.0 --port 8770 --auth none
+```
+
+令牌模式：先生成随机令牌（至少24字符），把生成值私下提供给访问者；不要写入仓库或URL。
+
+```powershell
+$env:PROFILING_WEB_TOKEN = (& profiling_web/.venv/Scripts/python -c "import secrets; print(secrets.token_urlsafe(32))")
+# 查看并私下记录上面的环境变量值后启动；客户端在登录页输入同一令牌
+profiling_web/.venv/Scripts/python -m profiling_web --host 0.0.0.0 --port 8000 --auth token
+# Workload使用独立环境变量，在其终端配置
+$env:WORKLOAD_MODELER_TOKEN = (& profiling_web/.venv/Scripts/python -c "import secrets; print(secrets.token_urlsafe(32))")
+profiling_web/.venv/Scripts/python -m workload_modeler --host 0.0.0.0 --port 8770 --auth token
+```
+
+其他机器访问 `http://服务器IP:8000` 或 `http://服务器IP:8770`，例如 `http://192.168.1.10:8770`，不要使用0.0.0.0或客户端的127.0.0.1。服务器防火墙需允许对应TCP端口，建议仅允许局域网网段。无法访问时先在服务器检查页面，再检查IP、端口、防火墙和网络连通性。
+
+可追加 `--allowed-hosts 192.168.1.10,localhost,127.0.0.1` 限制请求中的服务器Host（不是客户端IP白名单）；非回环监听默认允许任意Host，现有HOSTS环境变量配置优先保留。浏览器登录使用8小时HttpOnly/SameSite会话，下载无需在URL携带令牌；退出或更换服务器令牌后需要重新登录。切换认证模式需重启服务。免令牌模式下能访问服务器的人均可操作共享任务、上传、下载和删除。HTTP不会加密令牌与数据，只应在可信网络使用；需要跨不可信网络时应部署HTTPS。Workload及Profiling免令牌模式不信任转发头；Profiling令牌模式沿用Uvicorn可信代理配置。

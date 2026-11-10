@@ -10,10 +10,10 @@
 <div class="job-filters"><div class="job-search"><input id="job-search" aria-label="搜索任务名称" placeholder="搜索任务名称" maxlength="120"><button id="find-jobs" class="secondary">查找</button></div><label class="check"><input id="jobs-trash" type="checkbox">回收站</label></div>
 <div id="jobs" class="task-list" role="navigation" aria-label="分析任务"></div>
 <div class="job-pagination"><button id="job-prev" class="text-button" disabled>上一页</button><span id="job-page">第 1 页</span><button id="job-next" class="text-button" disabled>下一页</button></div>
-<footer>本地处理 · 并发 1<p>本机免令牌 · 原始数据不外传</p></footer>
+<footer>本地处理 · 并发 1<p><span id="access-mode">正在读取访问模式</span> <button id="logout" hidden>退出登录</button></p></footer>
 </aside>
 <main class="workbench-main"><header class="workbench-header"><div><p class="eyebrow">GPU / ASCEND NPU</p><h1 id="page-title">性能预测工作台</h1><p id="page-description" class="muted">芯片规格 → 模型画像 → 算子折算 → 场景验证</p></div><span class="privacy">● 本地处理 · 无外部 AI 调用</span></header>
-<div id="message" role="status" hidden></div>
+<div id="message" role="status" hidden></div><section id="login-panel" class="panel" hidden><h2>访问令牌</h2><form id="login-form"><label>输入服务器管理员提供的令牌<input id="access-token" type="password" autocomplete="current-password" required maxlength="512"></label><button type="submit">登录</button><p id="login-error" role="alert"></p></form></section>
 <section id="analysis-page"><section id="job-form" class="panel"><div class="heading"><h2 id="job-title">新建分析</h2><span id="job-status" class="tag">未选择</span></div><div class="toolbar"><button id="rename" class="secondary">修改名称</button><button id="clone" class="secondary">复用输入，新建分析</button><button id="cancel" class="secondary">取消运行</button><button id="delete-job" class="secondary danger" disabled>移入回收站</button></div>
 <h3 class="form-section-heading"><span>01</span> 输入与平台</h3>
 <div class="grid"><label>任务名称<input id="job-name" value="模型迁移分析" maxlength="120"></label><label>输入类型<select id="side"><option value="gpu">GPU · PyTorch trace</option><option value="npu">NPU · trace / kernel_details.csv</option></select></label><label>源平台<select id="source-platform"></select></label><label>目标平台<select id="target-platform"></select></label></div>

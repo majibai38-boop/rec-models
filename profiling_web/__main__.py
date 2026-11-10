@@ -13,7 +13,8 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--data-dir")
-    parser.add_argument("--auth", choices=("auto", "local", "token"), default=os.environ.get("PROFILING_WEB_AUTH", "auto"))
+    parser.add_argument("--auth", choices=("auto", "local", "token", "none"), default=os.environ.get("PROFILING_WEB_AUTH", "auto"))
+    parser.add_argument("--allowed-hosts", help="允许访问的服务器IP/域名，逗号分隔；局域网默认允许所有Host")
     args = parser.parse_args()
     if args.data_dir:
         os.environ["PROFILING_WEB_DATA"] = str(Path(args.data_dir).resolve())
@@ -24,12 +25,18 @@ def main():
     if mode == "local" and not local_host:
         parser.error("Local no-token mode may only bind a loopback address")
     os.environ["PROFILING_WEB_AUTH"] = mode
-    if args.command != "worker" and args.host not in {"localhost", "127.0.0.1", "::1"} and not os.environ.get("PROFILING_WEB_TOKEN"):
+    if args.command != "worker" and not local_host and mode == "token" and not os.environ.get("PROFILING_WEB_TOKEN"):
         parser.error("Non-loopback deployment requires an explicit PROFILING_WEB_TOKEN")
+    if args.allowed_hosts:
+        os.environ["PROFILING_WEB_HOSTS"] = args.allowed_hosts
+    elif not local_host:
+        os.environ.setdefault("PROFILING_WEB_HOSTS", "*")
     settings = Settings().prepare()
     print(f"Data directory: {settings.data_dir}", flush=True)
     if mode == "local":
         print("Local mode: no token required; loopback access only", flush=True)
+    elif mode == "none":
+        print("Shared workspace: token disabled", flush=True)
     elif not os.environ.get("PROFILING_WEB_TOKEN"):
         print(f"Access token saved in: {settings.data_dir / 'access-token'} (keep private)", flush=True)
     if args.command == "worker":
@@ -43,7 +50,7 @@ def main():
     try:
         import uvicorn
         from .app import create_app
-        uvicorn.run(create_app(settings), host=args.host, port=args.port, workers=1, proxy_headers=mode != "local")
+        uvicorn.run(create_app(settings), host=args.host, port=args.port, workers=1, proxy_headers=mode == "token")
     finally:
         if worker is not None:
             worker.terminate()

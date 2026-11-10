@@ -180,7 +180,7 @@ def create_app(settings=None):
                 expected = f"{request.url.scheme}://{request.url.netloc}"
                 if request.headers.get("origin") != expected:
                     return JSONResponse({"detail": "Origin 校验失败"}, status_code=403)
-            if settings.auth_mode != "local" and path != "/api/session" and not (token_ok or valid_cookie(settings.token, request.cookies.get("profiling_session"))):
+            if settings.auth_mode == "token" and path != "/api/session" and not (token_ok or valid_cookie(settings.token, request.cookies.get("profiling_session"))):
                 return JSONResponse({"detail": "请登录"}, status_code=401)
             length = request.headers.get("content-length")
             try:
@@ -217,8 +217,8 @@ def create_app(settings=None):
 
     @app.post("/api/session")
     def login(body: Login, response: Response):
-        if settings.auth_mode == "local":
-            return {"authenticated": True, "auth_mode": "local"}
+        if settings.auth_mode in {"local", "none"}:
+            return {"authenticated": True, "auth_mode": settings.auth_mode}
         if not secrets.compare_digest(body.token, settings.token):
             raise HTTPException(401, "访问令牌错误")
         response.set_cookie("profiling_session", session_cookie(settings.token, int(time.time()) + 28800),

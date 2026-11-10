@@ -1,8 +1,9 @@
-"""Loopback-only web service, one isolated analysis at a time."""
+"""Single-server shared web service, one isolated analysis at a time."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import json
+import secrets
 import os
 from pathlib import Path
 import subprocess
@@ -23,6 +24,7 @@ from .worker import engine_digest
 from .screening import assessment
 from .empirical import estimate
 from . import __version__
+from .auth import session_cookie, valid_cookie
 
 UPLOAD_LIMIT=2048*1024**2
 STORAGE_LIMIT=10*1024**3
@@ -96,7 +98,14 @@ class Manager:
 
 
 def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
-               expanded_limit_mb=4096, memory_mb=4096, timeout=600):
+               expanded_limit_mb=4096, memory_mb=4096, timeout=600,
+               auth_mode="local", token="", allowed_hosts=None, secure_cookie=False):
+    if auth_mode not in {"local", "none", "token"}:
+        raise ValueError("认证模式必须为local、none或token")
+    if auth_mode == "token" and len(token) < 24:
+        raise ValueError("访问令牌至少24字符")
+    if auth_mode != "token":
+        token = ""
     if any(not isinstance(v,int) or v<=0 for v in (upload_limit_mb,expanded_limit_mb,memory_mb,timeout)):
         raise ValueError("上传、解压、内存和超时限制必须为正整数")
     upload_limit=upload_limit_mb*1024**2
@@ -129,19 +138,27 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
 
     app=FastAPI(title="Workload Modeler",version=__version__,lifespan=lifespan)
     hosts=["localhost","127.0.0.1","[::1]"]+(["testserver"] if test_mode else [])
-    app.add_middleware(TrustedHostMiddleware,allowed_hosts=hosts)
+    app.add_middleware(TrustedHostMiddleware,allowed_hosts=allowed_hosts or hosts)
     app.state.store=store
     app.state.manager=manager
 
     @app.middleware("http")
     async def local_security(request,call_next):
         peer=request.client.host if request.client else ""
-        if peer not in {"127.0.0.1","::1"} and not test_mode:
+        if auth_mode == "local" and not test_mode and (peer not in {"127.0.0.1","::1"}
+                or request.url.hostname not in {"127.0.0.1","localhost","::1"}
+                or any(h in request.headers for h in ('forwarded','x-forwarded-for','x-forwarded-host'))):
             return JSONResponse({"detail":"仅允许本机访问"},status_code=403)
-        if request.method not in {"GET","HEAD","OPTIONS"}:
+        bearer = request.headers.get('authorization','')
+        token_ok = bool(token) and bearer.startswith('Bearer ') and secrets.compare_digest(bearer[7:].encode(),token.encode())
+        if request.method not in {"GET","HEAD","OPTIONS"} and not token_ok:
             origin=request.headers.get("origin")
-            if (origin and origin!=str(request.base_url).rstrip("/")) or request.headers.get("sec-fetch-site")=="cross-site":
+            expected=str(request.base_url).rstrip("/")
+            if (origin and origin!=expected) or (auth_mode != 'local' and origin != expected) or request.headers.get("sec-fetch-site")=="cross-site":
                 return JSONResponse({"detail":"拒绝跨站请求"},status_code=403)
+        if auth_mode == 'token' and request.url.path.startswith('/api/') and request.url.path not in {'/api/auth','/api/session'}:
+            if not (token_ok or valid_cookie(token,request.cookies.get('workload_session'))):
+                return JSONResponse({'detail':'请先输入访问令牌登录'},status_code=401)
         response=await call_next(request)
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'"
@@ -181,6 +198,28 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
     def home():
         return FileResponse(STATIC/"index.html")
 
+    @app.get('/api/auth')
+    def auth_info():
+        return {'auth_mode':auth_mode}
+
+    @app.post('/api/session')
+    async def login(request:Request):
+        data = await body(request)
+        if auth_mode == 'token' and (not isinstance(data.get('token'),str) or
+                not secrets.compare_digest(data['token'].encode(),token.encode())):
+            raise HTTPException(401,'访问令牌错误')
+        response=JSONResponse({'authenticated':True})
+        if auth_mode == 'token':
+            response.set_cookie('workload_session',session_cookie(token,int(time.time())+28800),
+                                max_age=28800,httponly=True,secure=secure_cookie,samesite='strict')
+        return response
+
+    @app.delete('/api/session')
+    def logout():
+        response=JSONResponse({'authenticated':False})
+        response.delete_cookie('workload_session',httponly=True,secure=secure_cookie,samesite='strict')
+        return response
+
     @app.get("/static/{name}")
     def static(name:str):
         if name == "theme.css":
@@ -194,7 +233,7 @@ def create_app(data_dir=None, *, test_mode=False, upload_limit_mb=2048,
         return dict(version=__version__,metric_units=METRIC_UNITS,upload_limit_mb=upload_limit_mb,
                     empirical_defaults=EmpiricalAssumptions().model_dump(),
                     expanded_limit_mb=expanded_limit_mb,memory_limit_mb=memory_mb,timeout_seconds=timeout,worker_limit=1,
-                    boundary="本机免令牌；仅单设备预测；不执行上传代码")
+                    auth_mode=auth_mode,boundary="共享工作区；仅单设备预测；不执行上传代码")
 
     @app.get("/api/catalog/{kind}")
     def catalog(kind:str,deleted:bool=False):
