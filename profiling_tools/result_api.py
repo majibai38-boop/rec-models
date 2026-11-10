@@ -318,6 +318,7 @@ def summarize_results(output_dir):
                       for side in ("gpu", "npu")},
             "gpu_accounting": summary.get("gpu_accounting"), "coverage": summary.get("coverage_diagnostics"),
             "core_breakdown": summary.get("core_breakdown"),
+            "parameters": summary.get("parameters"),
             "overall_statistics": [_statistic_record(r) for r in read_csv(root / "npu_gpu_op_statistic.csv")
                                    if r.get("Row Kind") == "total"],
             "low_coverage_types": [{k: t[k] for k in ("device_id", "op_type", "core_type", "priority_rank",

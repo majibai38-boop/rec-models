@@ -1,4 +1,4 @@
-"""Small reproducibility manifest; raw traces are never copied into results."""
+"""Reproducibility manifest, including identities of scoped trace exports."""
 from __future__ import annotations
 
 from dataclasses import asdict

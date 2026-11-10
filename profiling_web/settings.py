@@ -22,9 +22,10 @@ class Settings:
         (self.data_dir / "jobs").mkdir(exist_ok=True, mode=0o700)
         if min(self.max_upload_bytes, self.storage_bytes, self.memory_mb, self.timeout_seconds) <= 0:
             raise ValueError("Resource limits must be positive")
-        if self.auth_mode not in {"local", "token"}:
-            raise ValueError("Authentication mode must be local or token")
-        if self.auth_mode == "local":
+        if self.auth_mode not in {"local", "token", "none"}:
+            raise ValueError("Authentication mode must be local, none or token")
+        if self.auth_mode in {"local", "none"}:
+            self.token = ""
             return self
         if not self.token:
             secret = self.data_dir / "access-token"

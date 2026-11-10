@@ -1,4 +1,6 @@
 **
+!web_shared/
+!web_shared/theme.css
 !profiling_tools/
 !profiling_tools/*.py
 !profiling_web/

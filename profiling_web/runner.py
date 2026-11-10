@@ -60,11 +60,15 @@ def run(task_path):
                     raise ValueError('Invalid base attempt')
                 base = json.loads((attempt.parent/state['base_attempt']/'reports/run_manifest.json').read_text(encoding='utf-8'))
             summary = compare_profiles(config, progress=progress, manual_enabled=True,
-                                       manual_links=state.get('links',[]), manual_base=base)
+                                       manual_links=state.get('links',[]), manual_base=base,
+                                       cache_dir=attempt.parent.parent/'analysis-cache')
             if summary["validation"]["status"] != "valid":
                 raise ValueError("Result validation failed")
             progress("indexing")
+            index_started = time.perf_counter()
             build_index(config.output_dir, attempt / "index.sqlite")
+            summary['timing_seconds']['index_build'] = round(time.perf_counter() - index_started, 6)
+            write_json(Path(config.output_dir)/'summary.json', summary)
             write_json(attempt / "result.json", {"status": "succeeded", "summary": public_summary(config.output_dir)})
     except InputSelectionError as exc:
         write_json(attempt / "result.json", {"status": "needs_selection", "error": "范围选择不完整，请检查 PID / step"})

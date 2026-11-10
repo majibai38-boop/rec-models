@@ -40,7 +40,7 @@ class InputSelectionError(ValueError):
         super().__init__("Input scope is ambiguous; run inspect and select PID/step or --all-steps.")
 
 
-def compare_profiles(config: CompareConfig, *, progress=None, manual_links=(), manual_enabled=False, manual_base=None) -> Dict[str, Any]:
+def compare_profiles(config: CompareConfig, *, progress=None, manual_links=(), manual_enabled=False, manual_base=None, cache_dir=None) -> Dict[str, Any]:
     # Optional service adapter hook; no web dependencies in the analysis engine.
     def stage(name):
         if progress is not None:
@@ -55,6 +55,7 @@ def compare_profiles(config: CompareConfig, *, progress=None, manual_links=(), m
     started_at = time.perf_counter()
     stage("inspection")
     manifest = begin_run(config)
+    identity_checked_at = time.perf_counter()
     if manual_base is not None:
         if manifest['producer'] != manual_base['producer'] or {
             k: v['sha256'] for k,v in manifest['inputs'].items()
@@ -65,43 +66,55 @@ def compare_profiles(config: CompareConfig, *, progress=None, manual_links=(), m
         if any(getattr(config,k) != manual_base['parameters'][k] for k in scope):
             raise ValueError('人工关联的比较范围已经改变')
         manifest['manual_base_run_id'] = manual_base['run_id']
-    inspection, loaded, details = inspect_inputs(config, retain_data=True)
-    if inspection["errors"]:
-        raise ValueError("; ".join(f"{e['side']}: {e['message']}" for e in inspection["errors"]))
-    if config.require_explicit_scope and inspection["selections_required"]:
-        raise InputSelectionError(inspection)
-    inspected_at = time.perf_counter()
-    stage("gpu_parse")
-    gpu = parse_trace(
-        config.gpu_trace,
-        "gpu",
-        op_prefix=config.op_prefix,
-        requested_pid=config.gpu_pid,
-        requested_step=config.gpu_step,
-        include_communication=config.include_communication,
-        flow_tolerance_us=config.flow_tolerance_us,
-        trace_data=loaded.pop("gpu"),
-    )
-    gpu_parsed_at = time.perf_counter()
-    stage("npu_parse")
-    npu = parse_trace(
-        config.npu_trace,
-        "npu",
-        op_prefix=config.op_prefix,
-        requested_pid=config.npu_pid,
-        requested_step=config.npu_step,
-        include_communication=config.include_communication,
-        flow_tolerance_us=config.flow_tolerance_us,
-        trace_data=loaded.pop("npu"),
-    )
-    npu_parsed_at = time.perf_counter()
-    stage("detail_link")
-    attach_kernel_details(npu, details)
-    details_attached_at = time.perf_counter()
-    stage("matching")
-    op_map = load_op_map(config.op_map)
-    matches, unmatched_gpu, unmatched_npu = match_ops(gpu, npu, op_map)
-    matched_at = time.perf_counter()
+    from .analysis_cache import load_cache, save_cache, copy_exports
+    stage("cache_load")
+    cached, cache_reason = load_cache(cache_dir, manifest)
+    cache_checked_at = time.perf_counter()
+    if cached is not None:
+        inspection = cached['inspection']
+        gpu, npu = cached['gpu'], cached['npu']
+        matches = cached['matches']
+        unmatched_gpu, unmatched_npu = cached['unmatched_gpu'], cached['unmatched_npu']
+        op_map = cached['op_map']
+        inspected_at = gpu_parsed_at = npu_parsed_at = details_attached_at = matched_at = time.perf_counter()
+    else:
+        inspection, loaded, details = inspect_inputs(config, retain_data=True)
+        if inspection["errors"]:
+            raise ValueError("; ".join(f"{e['side']}: {e['message']}" for e in inspection["errors"]))
+        if config.require_explicit_scope and inspection["selections_required"]:
+            raise InputSelectionError(inspection)
+        inspected_at = time.perf_counter()
+        stage("gpu_parse")
+        gpu = parse_trace(
+            config.gpu_trace,
+            "gpu",
+            op_prefix=config.op_prefix,
+            requested_pid=config.gpu_pid,
+            requested_step=config.gpu_step,
+            include_communication=config.include_communication,
+            flow_tolerance_us=config.flow_tolerance_us,
+            trace_data=loaded.pop("gpu"),
+        )
+        gpu_parsed_at = time.perf_counter()
+        stage("npu_parse")
+        npu = parse_trace(
+            config.npu_trace,
+            "npu",
+            op_prefix=config.op_prefix,
+            requested_pid=config.npu_pid,
+            requested_step=config.npu_step,
+            include_communication=config.include_communication,
+            flow_tolerance_us=config.flow_tolerance_us,
+            trace_data=loaded.pop("npu"),
+        )
+        npu_parsed_at = time.perf_counter()
+        stage("detail_link")
+        attach_kernel_details(npu, details)
+        details_attached_at = time.perf_counter()
+        stage("matching")
+        op_map = load_op_map(config.op_map)
+        matches, unmatched_gpu, unmatched_npu = match_ops(gpu, npu, op_map)
+        matched_at = time.perf_counter()
     assert_inputs_unchanged(manifest)
     stage("reports")
     summary = write_reports(
@@ -115,18 +128,50 @@ def compare_profiles(config: CompareConfig, *, progress=None, manual_links=(), m
         diagnostic_coverage_threshold=config.diagnostic_coverage_threshold,
         manual_links=manual_links, manual_enabled=manual_enabled,
     )
+    from .download_reports import write_download_csvs, write_selected_trace
+    download_started_at = time.perf_counter()
+    if cached is not None:
+        stage("reuse_exports")
+        downloads = copy_exports(cached, output)
+    else:
+        stage("exports")
+        downloads = write_download_csvs(output, gpu, npu, details, config.npu_kernel_details, config.npu_step)
+        for side, profile in [('gpu', gpu), ('npu', npu)]:
+            write_selected_trace(output/(side+'_trace.json'), profile, getattr(config, side+'_step'))
+    summary['reports'].extend([*downloads['reports'], 'gpu_trace.json', 'npu_trace.json'])
+    download_finished_at = time.perf_counter()
+    if cache_dir is not None and cached is None:
+        stage("cache_write")
+        try:
+            save_cache(cache_dir, manifest, {
+                'inspection': inspection, 'gpu': gpu, 'npu': npu, 'matches': matches,
+                'unmatched_gpu': unmatched_gpu, 'unmatched_npu': unmatched_npu, 'op_map': op_map,
+            }, output, downloads)
+        except OSError:
+            # A disposable cache must never prevent publishing a valid analysis.
+            cache_reason += ':cache_write_failed'
+    summary['analysis_cache'] = {'hit': cached is not None, 'reason': cache_reason}
+    assert_inputs_unchanged(manifest)
     reports_written_at = time.perf_counter()
     summary["timing_seconds"] = {
-        "input_inspection": round(inspected_at - started_at, 6),
+        "input_identity": round(identity_checked_at - started_at, 6),
+        "cache_load": round(cache_checked_at - identity_checked_at, 6),
+        "input_inspection": 0.0 if cached is not None else round(inspected_at - cache_checked_at, 6),
         "gpu_parse": round(gpu_parsed_at - inspected_at, 6),
         "npu_parse": round(npu_parsed_at - gpu_parsed_at, 6),
         "kernel_detail_attach": round(details_attached_at - npu_parsed_at, 6),
         "operator_match": round(matched_at - details_attached_at, 6),
-        "report_write": round(reports_written_at - matched_at, 6),
+        "report_write": round(download_started_at - matched_at, 6),
+        "download_exports": round(download_finished_at - download_started_at, 6),
+        "cache_write": round(reports_written_at - download_finished_at, 6) if cache_dir is not None and cached is None else 0.0,
         "total": round(reports_written_at - started_at, 6),
     }
     summary.update({key: manifest[key] for key in ("schema_version", "run_id", "created_at", "producer")})
     summary["warnings"] = inspection["warnings"] + inspection["selections_required"]
+    if downloads['unknown_step_rows']:
+        summary['warnings'].append({'code':'export_step_unknown', 'side':'npu',
+            'message':'部分NPU明细缺少Step ID和开始时间，无法确认属于选中Step，未纳入下载CSV。',
+            'count':downloads['unknown_step_rows']})
     summary["status"] = "pending_validation"
     write_json(output / "input_inspection.json", inspection)
     manifest["artifacts"] = {name: {k: v for k, v in file_identity(output / name).items() if k in {"sha256", "size_bytes"}}

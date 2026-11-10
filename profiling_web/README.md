@@ -2,6 +2,8 @@
 
 复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，不调用外部 AI 服务。
 
+本服务用于 **GPU/NPU 双侧实测比较**，默认端口为 **8000**，输入为 GPU Trace、NPU Trace 与 NPU `kernel_details.csv`。如果只有一端采集、需要维护芯片规格或预测目标设备性能，请使用独立的 [Workload Modeler](../workload_modeler/README.md)（默认端口 **8770**）。两者任务与数据目录独立，Workload 的预测倍率不等同于本服务的实测 GPU/NPU 比值；完整对照见[仓库首页](../README.md#选择工具)。
+
 这是**单机、可信用户共享工作区**，不是多租户服务。本机免令牌模式下，本机其他进程及操作用户也能访问数据；令牌模式下，持有令牌的用户可以读取及删除所有任务。默认仅监听本机；不要直接暴露到公网。
 
 ## 本机启动
@@ -28,7 +30,7 @@ Get-Content profiling_web/data/access-token
 
 Linux 使用相同流程，将 `profiling_web/.venv/Scripts/python` 换成 `profiling_web/.venv/bin/python`。也可以通过 `PROFILING_WEB_TOKEN` 提供至少 24 字符的私有随机令牌，此时不会生成令牌文件。数据目录应只对运行服务的系统用户开放，尤其是 Windows 上应检查目录 ACL。
 
-`--auth local` 只允许监听 `127.0.0.1`、`localhost` 或 `::1`；同时检查实际客户端地址、Host 和写请求 Origin，拒绝转发头，不信任代理提供的客户端地址。不能通过把监听地址改成 `0.0.0.0` 来关闭认证。局域网、反向代理与 Docker Compose 仍使用令牌模式。
+`--auth local` 只允许监听 `127.0.0.1`、`localhost` 或 `::1`；同时检查实际客户端地址、Host 和写请求 Origin，拒绝转发头，不信任代理提供的客户端地址。不能通过把监听地址改成 `0.0.0.0` 来关闭认证。局域网可显式使用 `--auth none`；Docker Compose 默认仍使用令牌模式，参见文末局域网配置。
 
 `all`（默认）启动一个 API 进程和一个独立 Worker，Ctrl+C 停止。可分别运行 `python -m profiling_web serve` 与 `python -m profiling_web worker`，但必须使用相同的数据目录与配置；每个数据目录只允许一个 API 和一个 Worker。
 
@@ -37,6 +39,8 @@ profiling_web/.venv/Scripts/python -m profiling_web all --port 8000 --data-dir p
 ```
 
 前端开发可运行 `pnpm --dir profiling_web/frontend dev`，Vite 将 `/api` 代理到本机 8000 端口。正式部署使用构建后的静态资源，无需运行 Node 服务。
+
+界面基础样式与 Workload Modeler 共用仓库 `web_shared/theme.css`。修改主题后需重新构建前端并刷新页面；Docker 构建已包含共享主题目录。两套工具保持独立任务、输入和统计口径，只统一视觉规范。
 
 ## 使用流程
 
@@ -77,6 +81,10 @@ GPU 类 Cube/Vector 仅参考已对齐的 NPU 分类，包括人工确认关联�
 2. 查看前三个 GPU 候选及推荐理由；也可按 kernel 名称、CPU op 或模块搜索其他未分配候选。优先推荐已对齐的完整 CPU scope，再参考模块、shape 和 dtype；排序不是匹配概率，不使用耗时相近作为匹配证据。
 3. 人工核对调用范围后选择候选，查看预计覆盖率及整组时间，填写确认理由，点击「仅确认当前组」。后台重新生成报告，完成后网页及 Excel 同步更新。
 4. 点击「人工关联 ×N」查看理由、撤销关联；撤销同样会重新生成报告。
+
+人工关联与撤销会复用任务级解析缓存：首次分析保存所选范围的 CPU/kernel 数据及自动匹配结果，后续跳过 Trace 预检查、解析、NPU 明细关联和自动匹配，并复用已生成的 Step CSV/JSON。覆盖率、耗时统计、Excel、诊断和查询索引仍按当前人工关联重新生成，原始输入与历史报告保持独立。缓存只保留当前任务一份，不保存整份 Trace 事件，使用 JSON 而非可执行对象序列化。
+
+输入 SHA256、分析参数和引擎版本必须一致才可命中；缓存或复用文件缺失/损坏时自动完整重算。首次分析会增加缓存写入及磁盘占用，后续仍需输入校验、报告生成和索引构建，因此不是即时完成。`summary.json` 中的 `analysis_cache` 记录命中情况，`timing_seconds` 单列下载导出、缓存写入及 Web 索引构建耗时。更新引擎后仍需按下文说明新建分析，不会绕过旧任务版本校验。
 
 重复调用可批量确认：选好一对 NPU/GPU 候选后，点击「预览同类批量关联」。系统以这一对为模板，在当前 NPU 类型、模块、CPU 调用结构和线程范围内扩展；GPU 候选还限制设备及 kernel 组成。优先使用唯一的已有 CPU 对齐；没有对齐时，仅在两端完整 shape/dtype 分组数量相等、调用顺序与已选配对和已有对齐一致时，提供「人工模板 + 调用顺序」配对。缺失元数据、弱 owner、数量冲突和重叠候选会排除并显示原因。旧报告缺少批量上下文时，需要复用输入重新分析。
 
@@ -153,7 +161,7 @@ docker compose --env-file profiling_web/.env -f profiling_web/compose.yaml down
 
 并发固定为 1；每次分析使用独立子进程。RSS/目录配额是定期采样的保护，不是硬隔离，瞬时峰值可能超限。Docker 额外限制 API 内存 1 GiB、Worker 默认 10 GiB。解析器仍会完整加载 JSON，较大 trace 需要提高资源限制或缩小采集范围；预检查和正式分析会分别读取输入。
 
-需要局域网访问时，必须显式设置令牌、监听地址和允许的 Host。建议通过 HTTPS 反向代理，正确保留原始 Host/协议并仅信任指定代理。当前没有多用户权限、登录限流和公网防护，不应将它视为可直接公网部署的产品。
+局域网访问可选择令牌或显式免令牌模式，具体命令见文末。建议通过 HTTPS 反向代理，正确配置原始 Host/协议及代理信任；Profiling令牌模式保留原有Uvicorn代理支持，免令牌模式禁用转发头信任。当前没有多用户权限、登录限流和公网防护，不应将它视为可直接公网部署的产品。
 
 ## 数据、恢复与安全
 
@@ -215,3 +223,59 @@ profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1
 参考：[RmsNormQuant 优化案例](https://cann.csdn.net/6a15a2e910ee7a33f2755b2e.html)、[官方 No Bound 筛查](https://github.com/Ascend/msprof-analyze/blob/master/msprof_analyze/advisor/analyzer/computation/bound/operator_bound_checker.py)、[官方 Roofline 分析](https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_user_guide.md#roofline-bottleneck-analysis-chart)。本实现补充双侧核域、Fixpipe 和缺失值检查，不等同于官方检测器的逐项复刻。
 
 后续扩展边界：暂不支持断点上传、多用户隔离、跨任务缓存、跨轮对比和完整时间线查看。CLI/Skill 不依赖 Web 组件，原有调用方式不变。
+
+## 模型参数量画像
+
+结果总览的「模型参数量 · Trace Shape估算」并列展示NPU/GPU的候选参数合计、稠密权重、Embedding表和待确认矩阵右输入元素数。展开可切换设备查看Shape、dtype、模块、调用次数和去重依据；前100组在线显示，完整明细保存在服务器报告目录的 `parameter_estimates.json`（不再列入精简下载菜单）。旧结果需复用输入重新分析。
+
+两端独立使用所选PID/Step范围内kernel的CPU owner及祖先，不以kernel是否匹配为条件。复用 `profiling_tools.parameters`，与Workload使用同一估算规则：Linear、卷积、Embedding和支持的归一化按权重角色识别，嵌套实现与重复Step去重；mm/bmm等可能为激活运算，独立列为待确认项，不加入合计。
+
+缺少模块/权重身份时，相同Shape的不同层可能合并，共享权重或精度副本可能重复；候选规模不是精确参数量或上下界。Embedding按完整表Shape计数，不是实际访问行数或稀疏梯度证明。两端候选差异可能来自CPU算子展开与元数据差异，不能据此判定模型不等价。不修改实测性能比、kernel映射和覆盖率统计。
+
+## 局域网多机访问（单服务器部署）
+
+两套服务都支持 `--host 0.0.0.0 --auth token`（共享令牌）或 `--auth none`（明确关闭令牌）。默认仍只监听127.0.0.1；`auto`在本机自动免令牌，在非回环地址要求令牌。`local`始终只允许本机。多个浏览器访问同一套任务与配置，计算在服务器执行，不是分布式执行或用户隔离。
+
+服务器 PowerShell，在仓库根目录运行：
+
+```powershell
+# 免令牌：仅用于可信局域网
+profiling_web/.venv/Scripts/python -m profiling_web --host 0.0.0.0 --port 8000 --auth none
+# Workload可在另一个终端启动
+profiling_web/.venv/Scripts/python -m workload_modeler --host 0.0.0.0 --port 8770 --auth none
+```
+
+令牌模式：先生成随机令牌（至少24字符），把生成值私下提供给访问者；不要写入仓库或URL。
+
+```powershell
+$env:PROFILING_WEB_TOKEN = (& profiling_web/.venv/Scripts/python -c "import secrets; print(secrets.token_urlsafe(32))")
+# 查看并私下记录上面的环境变量值后启动；客户端在登录页输入同一令牌
+profiling_web/.venv/Scripts/python -m profiling_web --host 0.0.0.0 --port 8000 --auth token
+# Workload使用独立环境变量，在其终端配置
+$env:WORKLOAD_MODELER_TOKEN = (& profiling_web/.venv/Scripts/python -c "import secrets; print(secrets.token_urlsafe(32))")
+profiling_web/.venv/Scripts/python -m workload_modeler --host 0.0.0.0 --port 8770 --auth token
+```
+
+其他机器访问 `http://服务器IP:8000` 或 `http://服务器IP:8770`，例如 `http://192.168.1.10:8770`，不要使用0.0.0.0或客户端的127.0.0.1。服务器防火墙需允许对应TCP端口，建议仅允许局域网网段。无法访问时先在服务器检查页面，再检查IP、端口、防火墙和网络连通性。
+
+可追加 `--allowed-hosts 192.168.1.10,localhost,127.0.0.1` 限制请求中的服务器Host（不是客户端IP白名单）；非回环监听默认允许任意Host，现有HOSTS环境变量配置优先保留。浏览器登录使用8小时HttpOnly/SameSite会话，下载无需在URL携带令牌；退出或更换服务器令牌后需要重新登录。切换认证模式需重启服务。免令牌模式下能访问服务器的人均可操作共享任务、上传、下载和删除。HTTP不会加密令牌与数据，只应在可信网络使用；需要跨不可信网络时应部署HTTPS。Workload及Profiling免令牌模式不信任转发头；Profiling令牌模式沿用Uvicorn可信代理配置。
+
+## 精简下载菜单
+
+主入口保留对比Excel。「更多输出」仅列以下六项，不再罗列内部映射/诊断CSV：
+
+| 文件 | 内容 |
+|---|---|
+| npu_kernel_details.csv | 保留上传NPU明细的原始列名、列顺序和单元格值，仅选中Step的明细 |
+| npu_op_statistic.csv | 按Device_id/OP Type/Core Type重新汇总Count、Total/Min/Avg/Max Time(us)、Ratio(%)，采用NPU原统计格式 |
+| gpu_kerenel_details.csv | 每个GPU计算kernel的名称、设备、流、开始时间、耗时，以及关联CPU调用的输入Shape/dtype与来源；无OP Type列 |
+| gpu_op_statistic.csv | 按kernel名称、设备、CPU输入Shape/dtype和来源聚合数量及耗时；无OP Type列 |
+| npu_trace.json / gpu_trace.json | 所选PID/Step范围的Trace；保留原始事件字段和顶层元数据，保留关联设备活动及必要进程元数据 |
+
+统计耗时为Duration求和，Ratio按各设备导出的计算kernel时间计算；不是忙碌时间或墙钟时间。GPU Shape/dtype来自CPU owner，不能当作GPU kernel的物理参数；无法关联时留空。GPU内存/通信统计仍以对比报告原口径为准。
+
+NPU有Step ID时按ID筛选；缺少ID时按所选Step的开始时间窗口筛选；连时间也缺少的行不混入下载，并给出警告。缺少有效Duration的统计组保留未知，该设备Ratio不补成完整占比。JSON不裁剪保留事件的时间戳和时长，归属于所选CPU调用的异步kernel可能跨越Step结束边界。全范围分析不裁剪Step，但保留所选CPU PID及设备事件范围。
+
+旧结果不在下载请求时重解析大文件，需要「复用输入」重新分析生成新导出。内部报告继续保留用于网页查询、人工关联和诊断；收起下载入口不改变分析逻辑。JSON导出在后台生成，需额外读取源Trace并占用报告磁盘空间。CSV浏览器下载仍进行表格公式安全转义。
+
+「原始输入」位于「更多输出」旁，列出该任务实际上传的GPU Trace、NPU Trace和NPU kernel明细，下载时使用原上传文件名，内容逐字节保持不变（包括完整Step范围、CSV原始值及编码）。它与「更多输出」的所选Step导出相互独立；旧任务只要原文件仍在即可下载，无需重新分析。接口使用同一服务认证策略，仅允许固定输入角色；正在上传、文件缺失或大小异常时拒绝下载。原始CSV作为二进制附件返回，不进行报告CSV的公式转义。
