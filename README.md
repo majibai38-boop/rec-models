@@ -66,6 +66,7 @@ GPU 和 NPU 的 kernel 名称、数量、融合方式不同，直接按名字比
 | kernel 数量对不上，能否整组比较？ | **整体对比**：查看已有 CPU 调用/融合比较单元，避免强行一一配对 |
 | 为什么覆盖率低？该先查哪里？ | **覆盖率诊断**：按未可比时间定位原因、证据和排查建议 |
 | 哪个 Shape / dtype 的表现不同？ | **算子详情**：元数据分组、可比均值、图表和逐次证据 |
+| 这个 kernel 从哪里下发，与哪些 stream 并发？ | **双侧详情 → 调用时间线**：本地 Perfetto，按事件或整个比较单元定位所选 Step Trace |
 | 自动映射漏掉了已人工确认的调用？ | **补充关联**：候选预览、批量确认、理由留痕、撤销 |
 | 如何交付分析结论？ | **Excel / CSV / Markdown / JSON**：可读报告与机器可读证据 |
 
@@ -88,6 +89,8 @@ profiling_web/.venv/Scripts/python -m profiling_web
 ```
 
 打开 **http://127.0.0.1:8000**。默认本机部署无需令牌。构建完成后，日常启动只需最后一条命令。
+
+可选 Trace 时间线：首次运行 `profiling_web/.venv/Scripts/python -m profiling_web.perfetto` 安装固定版本的本地 Perfetto，重启服务后从「算子详情 → 双侧详情」打开。支持定位事件、查看 CPU/stream 轨道和复用已加载 Trace；[安装与使用说明](profiling_web/README.md#在算子详情中查看-trace-时间线)包含离线安装方法。
 
 <details>
 <summary>Linux / macOS 命令</summary>
@@ -244,6 +247,10 @@ Profiling Workbench 的实测比较需要三份输入。单侧估算使用 [Work
 **上传很大的 Trace 会怎样？**
 
 Web 流式接收文件，但解析器仍完整加载 JSON。先选择合理的采集范围，并按部署文档设置上传、内存、磁盘与超时限制。
+
+**调用时间线需要联网或重新分析吗？**
+
+首次安装 Perfetto 需要下载官方资源，也支持离线 ZIP；运行时从自己的服务器加载，Trace 由访问者的浏览器解析，不上传到公共站点。已有结果包含详情索引和 Step JSON 时可直接打开，否则需复用输入生成新结果。升级时需要构建前端、安装查看器并重启服务，详见[时间线安装、编号含义与常见问题](profiling_web/README.md#在算子详情中查看-trace-时间线)。
 
 ## 开发与验证
 

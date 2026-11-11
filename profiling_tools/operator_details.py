@@ -40,6 +40,7 @@ def cpu_metadata(profile, index):
         path.append(profile.ops[current].canonical_name)
         current = profile.ops[current].parent_index
     return {'index': index, 'name': op.event.name, 'module': op.module_key,
+            'trace_event_index': op.event.index, 'time_us': op.event.duration_us,
             'path': list(reversed(path)), 'pid': op.event.pid, 'tid': op.event.tid,
             'timestamp_us': op.event.timestamp_us, 'source': 'cpu_op',
             **tensor_metadata(op.raw_input_shapes or op.input_shapes, op.raw_input_dtypes or op.input_dtypes,
@@ -51,6 +52,8 @@ def kernel_metadata(profile, index, memory=False):
     k = (profile.memory_activities if memory else profile.kernels)[index]
     d = k.detail
     return {'index': index, 'name': k.event.name, 'kind': 'memory' if memory else 'kernel',
+            'trace_event_index': k.event.index, 'tid': k.event.tid,
+            'trace_present': k.event.index >= 0,
             'time_us': k.event.duration_us, 'timestamp_us': k.event.timestamp_us,
             'owner_index': k.owner_op_index, 'stream': k.stream_id,
             'pid': k.event.pid, 'device': d.device_id if d else str(k.event.args.get('device', '')),

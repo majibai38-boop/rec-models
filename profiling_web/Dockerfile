@@ -14,6 +14,7 @@ COPY profiling_web/requirements.lock.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt && useradd --uid 10001 --create-home profiler && mkdir /data && chown profiler:profiler /data
 COPY profiling_tools/*.py /app/profiling_tools/
 COPY profiling_web/*.py /app/profiling_web/
+RUN python -m profiling_web.perfetto
 COPY --from=frontend /app/profiling_web/frontend/dist /app/profiling_web/frontend/dist
 USER profiler
 EXPOSE 8000

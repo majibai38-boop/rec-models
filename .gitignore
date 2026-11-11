@@ -20,6 +20,8 @@ node_modules/
 .pnpm-store/
 /profiling_web/data/
 /profiling_web/.env
+/profiling_web/vendor/
+/tmp/
 
 # Editors and operating systems
 .idea/

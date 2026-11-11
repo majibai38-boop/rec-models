@@ -17,6 +17,8 @@ python -m venv profiling_web/.venv
 profiling_web/.venv/Scripts/python -m pip install -r profiling_web/requirements.lock.txt
 pnpm --dir profiling_web/frontend install --frozen-lockfile
 pnpm --dir profiling_web/frontend build
+# 可选：安装本地 Trace 时间线查看器（首次安装需要访问 GitHub）
+profiling_web/.venv/Scripts/python -m profiling_web.perfetto
 profiling_web/.venv/Scripts/python -m profiling_web
 ```
 
@@ -38,7 +40,7 @@ Linux 使用相同流程，将 `profiling_web/.venv/Scripts/python` 换成 `prof
 profiling_web/.venv/Scripts/python -m profiling_web all --port 8000 --data-dir profiling_web/data
 ```
 
-前端开发可运行 `pnpm --dir profiling_web/frontend dev`，Vite 将 `/api` 代理到本机 8000 端口。正式部署使用构建后的静态资源，无需运行 Node 服务。
+前端开发可运行 `pnpm --dir profiling_web/frontend dev`，Vite 将 `/api` 和 `/perfetto` 代理到本机 8000 端口。正式部署使用构建后的静态资源，无需运行 Node 服务。
 
 界面基础样式与 Workload Modeler 共用仓库 `web_shared/theme.css`。修改主题后需重新构建前端并刷新页面；Docker 构建已包含共享主题目录。两套工具保持独立任务、输入和统计口径，只统一视觉规范。
 
@@ -61,9 +63,81 @@ profiling_web/.venv/Scripts/python -m profiling_web all --port 8000 --data-dir p
 - 同一 GPU 活动集合只在同类型执行组内计一次；跨类型或部分重叠的共享 GPU 活动不输出独立比值，转「整体比较」检查。未映射 GPU 耗时为未知而不是零。汇总比值是可比 GPU 时间和 / 同批可比 NPU 时间和，不是单次比值的平均。此页独立可比口径可能比类型表更保守，不改变已有 TOTAL/覆盖率或映射规则。
 - NPU kernel 元数据来自 `kernel_details.csv`；GPU CPU 输入来自 trace，CPU 输出只在 trace 明确记录时展示。CPU 元数据不冒充 GPU kernel 实参，GPU kernel 的未知输出不会从 NPU 复制。人工确认标记为「人工确认（非自动验证）」。
 
-完整详情由分析阶段生成 `operator_details.json`，与诊断阈值无关；Worker 构建只读 SQLite 分组及事件索引，页面 GET 不解析 trace。旧任务缺少索引时可继续使用原逐 kernel 映射和诊断；完整新视图需「复用输入，新建分析」，不会自动重跑或覆盖旧结果。
+完整详情由分析阶段生成 `operator_details.json`，与诊断阈值无关；Worker 构建只读 SQLite 分组及事件索引，详情查询 GET 不在服务器重新解析 trace。可选时间线会在浏览器中单独解析已导出的 Step Trace。旧任务缺少索引时可继续使用原逐 kernel 映射和诊断；完整新视图需「复用输入，新建分析」，不会自动重跑或覆盖旧结果。
 
 只读 API：`GET /api/jobs/{job_id}/operator-details?op_type=Add&device_id=0&core_type=AI_CORE`。可选 `view=groups|units`、`group_id`、`unit_id`、`search`、`sort=npu_time|ratio|position`、`offset`、`limit`（最大 200）及 `attempt`；版本不一致返回 409，旧索引返回 `supported:false`。
+
+### 在算子详情中查看 Trace 时间线
+
+入口：**类型对比 → 详细对比 → shape 分组 → 双侧详情 → 查看 NPU / GPU 调用时间线**。查看器使用同服务器托管的 [Perfetto UI](https://perfetto.dev/docs/visualization/embedding-the-ui)，无需打开 `chrome://tracing` 或手动导入文件。
+
+- 点击后才读取本次所选 PID/Step 的 Trace；两端分别加载，首次由浏览器解析。切换同一结果中的比较单元只移动视窗，已加载的一侧不重复下载、解析。退出算子详情页或切换任务/结果版本释放查看器；「收起时间线」与关闭双侧详情保留缓存，可用「释放当前 Trace 内存」主动卸载一侧。
+- 默认定位第一个 kernel 的时间范围。通过「当前事件」选择组内其他 kernel，或点「定位整个比较单元」包含该侧已记录的 CPU scope、owner 和设备事件。「扩大上下文」查看周边并发和空隙，「全屏查看」扩大工作区。Perfetto 左上角展开轨道后可查看 CPU 嵌套与设备 stream；点时间片可查看原始参数，已记录的 flow 可用于追踪下发关系。
+- GPU/NPU 使用独立时钟，不叠在同一绝对时间轴。定位表示时间窗口，不代表唯一选中某个事件；请结合名称、PID/TID、stream 和同名序号核对。比较单元跨多个 Step 时，整体范围可能很宽，应优先逐事件查看。
+- Trace 缺少 CPU 或 flow 时无法还原调用链。仅从 `kernel_details.csv` 补充的 NPU kernel 会提示无原始事件，只尝试定位附近范围。旧详情缺少原始事件信息时仅按时间范围定位；旧报告连 Step Trace 都没有时，需「复用输入，新建分析」。导出范围外的调用不会补造。
+
+时间线加载的内容与「更多输出」的 `npu_trace.json` / `gpu_trace.json` 相同，不是「原始输入」里的完整采集。类型、shape 和搜索筛选只决定定位目标，不会进一步裁剪该份 Trace；因此附近出现其他类型或并发 stream 是正常的。此入口用于检查已有比较单元，暂不提供在时间线上选取两个任意事件后直接建立人工关联的操作，也不会因查看时间线而改变映射、覆盖率或性能比。
+
+#### 编号与时间的含义
+
+| 页面内容 | 含义 |
+| --- | --- |
+| 当前事件中的 `#数字` | 本次分析结果中对应 kernel / memory 集合的内部索引，从 0 开始；不是同名调用次数，也不是 Perfetto 的 slice ID。两端相同数字不表示已配对 |
+| NPU「同名 x/y」 | 当前设备、完整 kernel 名称在所选分析范围中的第 x 次 / 共 y 次，从 1 开始；跨 Step 和 stream 连续编号 |
+| 上一事件 / 下一事件 | 遍历当前比较单元内的设备事件，不是整份 Trace 的所有同名调用；查找其他同名调用请返回算子详情使用「定位同名 kernel」 |
+| 定位整个比较单元 | 显示该侧 CPU scope、owner 和设备事件的最早开始至最晚结束，并留出上下文；窗口内其他事件不自动属于该单元 |
+| 时间线区间与表格耗时 | 区间包含空隙及并发，表格为设备事件 Duration 累加。两者不要求相等；CPU 调用返回不等于异步设备工作完成，时间相邻不证明依赖 |
+
+#### 首次安装与已有服务升级
+
+以下命令在**实际运行服务的同一份代码目录**执行，使用该服务的 Python 环境。更新 `auto_tools` 后先停止旧 API/Worker，保留原数据目录，再执行：
+
+```powershell
+profiling_web/.venv/Scripts/python -m pip install -r profiling_web/requirements.lock.txt
+pnpm --dir profiling_web/frontend install --frozen-lockfile
+pnpm --dir profiling_web/frontend build
+profiling_web/.venv/Scripts/python -m profiling_web.perfetto
+profiling_web/.venv/Scripts/python -m profiling_web --port 8000 --data-dir profiling_web/data
+```
+
+最后一条需沿用原来的端口、数据目录、监听地址、认证方式和环境变量；如原来分别启动 API/Worker，仍按原部署方式启动。不要同时启动两个实例访问同一数据目录。重启后刷新浏览器；只安装查看器不会更新旧前端，也不会让已运行的 API 自动挂载新资源。仅增加查看器不要求重跑已有任务，是否需要新建分析取决于旧结果是否包含详情索引及 Step Trace。
+
+安装器固定 **Perfetto v59.1**，从 [官方 Release](https://github.com/google/perfetto/releases/tag/v59.1) 下载 `perfetto-ui.zip` 并核验 SHA256：`df4433f5d8d98d2c490249870944c819ff85206f61e55e5983bbcc2338c83904`。UI 资源位于 `profiling_web/vendor/perfetto/`，不提交到仓库，也不在任务数据目录中；新克隆或另一个 worktree 需要单独安装。重复执行会复用已安装版本；未安装时其余功能可正常使用，打开时间线会提示安装方式。
+
+离线机器先复制同版本官方 ZIP，再执行：
+
+```powershell
+profiling_web/.venv/Scripts/python -m profiling_web.perfetto --archive D:/packages/perfetto-ui.zip
+```
+
+Docker 构建会安装同一固定包，构建阶段需要访问 GitHub；升级需要重新构建镜像并重建容器，单纯重启旧容器不会更新镜像。当前 Dockerfile 不支持通过 `--archive` 构建参数传入离线包；离线部署可在联网机器构建镜像后迁移。Compose 的运行容器为只读文件系统，应在构建阶段安装。容器部署仍未在本开发环境实测。
+
+运行期间 UI、WASM 和 Trace 都从自己的服务加载，Trace 接口沿用本机/免令牌/令牌认证与结果版本校验，不上传到 Perfetto 公共站点。第三方代码与许可证见 [Perfetto 源码](https://github.com/google/perfetto/tree/v59.1) 和 [Apache-2.0 LICENSE](https://github.com/google/perfetto/blob/v59.1/LICENSE)。
+
+#### 局域网访问与大文件
+
+其他机器通过服务器 IP 访问时，只需在服务器安装 Perfetto；**Trace 的下载、解析和显示占用访问者浏览器所在机器的内存**。服务器继续负责已有分析和报告读取，`PROFILING_WEB_MEMORY_MB` 不限制浏览器内存。部署在域名根路径时，反向代理需让 `/`、`/assets/`、`/api/`、`/perfetto/` 保持同源；当前前端使用根路径，不能直接挂到 `/profiling/` 这样的子路径。若代理统一覆盖 CSP 或 X-Frame-Options，需要为 `/perfetto/` 保留应用返回的同源嵌入与 WASM 策略，其他页面沿用原策略。
+
+建议使用较新的 Chrome/Edge。大 Trace 第一次解析仍需时间和浏览器内存；本版未接入 native Trace Processor，双侧同时保留会增加内存占用。首次长时间解析完成后若没有自动聚焦，点「定位当前事件」。只读 Trace API 直接发送已生成的 Step JSON，不在请求中重跑分析或解析原始采集文件。
+
+支持流传输时，Trace 以流方式交给查看器，仍需浏览器构建解析结果。浏览器不支持流传输时，仅对已知大小且不超过 **256 MiB** 的 Trace 使用整文件缓冲回退；这不是上传上限，也不是所有浏览器的 Trace 大小上限。大文件优先选单个稳定 Step、只打开一侧；收起或关闭详情不会释放缓存，需要用「释放当前 Trace 内存」或离开算子详情页。
+
+#### 常见问题
+
+| 现象 | 检查与处理 |
+| --- | --- |
+| 找不到时间线按钮 | 入口在逐次记录的「双侧详情」中。确认正在运行新代码目录，已构建前端、重启服务并刷新页面 |
+| GPU/NPU 按钮置灰 | 当前比较单元没有该侧已关联设备事件；不表示原始 Trace 为空。先检查映射或补充关联 |
+| 提示未安装，实际已安装 | 核对安装与服务是否来自同一目录；安装后重启 API。仅重启 Worker 不会挂载查看器 |
+| ZIP 下载失败或 SHA256 不匹配 | 使用上面的固定版本官方 ZIP 和离线安装命令，不要改哈希跳过校验。提示安装目录不完整时，先停止服务并备份、重命名该目录，再安装 |
+| 查看器启动超时或空白 | 查看器握手超时为 30 秒，不是 Trace 解析时限。检查 `/perfetto/` 静态资源是否可达、代理是否保留相同源及响应头，必要时使用页面的 JSON 下载入口单独检查文件 |
+| 一直显示「Trace 已交给查看器」 | 此状态表示已开始交付数据，不是解析完成通知；解析进度看 Perfetto 内部。大文件可释放另一侧内存，解析结束后再次点「定位」 |
+| 定位后看不到 kernel 或 CPU | 展开进程/线程轨道，核对名称、PID/TID、stream，必要时「扩大上下文」。无原始事件、缺少 CPU/flow、或事件在导出范围之外时，查看器无法补齐 |
+| 提示旧结果缺少 Step Trace（404） | 「复用输入，新建分析」生成新导出；GET 不会重解析输入或补建文件 |
+| 提示结果版本已变化（409） | 人工关联或重跑后刷新任务，从当前类型表重新进入，避免沿用旧详情 URL |
+| 提示请登录（401） | 会话失效后重新登录并打开详情，不要把令牌放进 URL |
+
+验收范围：已用合成样例验证两侧加载、CPU/设备轨道、窗口定位、切换调用与双侧复用、全屏及释放单侧查看器；不等同于完成多 GiB Trace 或所有浏览器的压力测试。
 
 ### Cube / Vector 总览
 
@@ -173,7 +247,7 @@ docker compose --env-file profiling_web/.env -f profiling_web/compose.yaml down
 
 ## 数据、恢复与安全
 
-`tasks.sqlite`（WAL）保存任务状态；`jobs/<随机ID>/` 保存输入及各次运行目录。报告校验成功后生成只读查询索引，后续浏览只查询索引，不再解析 trace。输入在预检查开始后冻结，修正输入需新建任务。
+`tasks.sqlite`（WAL）保存任务状态；`jobs/<随机ID>/` 保存输入及各次运行目录。报告校验成功后生成只读查询索引，后续表格查询不再解析 trace；时间线按需读取已导出的 Step JSON，并在浏览器解析。输入在预检查开始后冻结，修正输入需新建任务。
 
 Worker 重启时将遗留运行标为 `interrupted`，不会静默重跑。失败/取消/中断可手动重试，每次使用新目录并保留旧结果；成功任务不原地覆盖。暂不自动过期清理，请定期在页面删除不需要的任务。备份前停止 API 与 Worker，或使用 SQLite 备份机制；不要只复制正在运行的主数据库而遗漏 WAL。
 
@@ -198,6 +272,8 @@ API 路径均以 `/api` 开头。令牌模式除登录外需要 Cookie 或 `Auth
 | 预检查 / 分析 / 取消 | POST `/jobs/{id}/{inspect,run,cancel}` |
 | 分页结果 | GET `/jobs/{id}/results?kind=operators&limit=30&offset=0` |
 | 调用事件证据 | GET `/jobs/{id}/call-evidence?call_id=…&offset=0&limit=200` |
+| 时间线查看器配置 | GET `/trace-viewer`，返回启动时的 `available`、`url`、`version` |
+| 当前结果的 Step Trace | GET `/jobs/{id}/trace-view/{gpu,npu}?attempt=<当前结果版本>`，`attempt` 为必填的 32 位小写十六进制标识 |
 | 下载 | GET `/jobs/{id}/artifacts/{name}` |
 | 永久删除非运行任务 | DELETE `/jobs/{id}?confirm=true` |
 
@@ -230,7 +306,7 @@ profiling_web/.venv/Scripts/python -m profiling_web.smoke --url http://127.0.0.1
 
 参考：[RmsNormQuant 优化案例](https://cann.csdn.net/6a15a2e910ee7a33f2755b2e.html)、[官方 No Bound 筛查](https://github.com/Ascend/msprof-analyze/blob/master/msprof_analyze/advisor/analyzer/computation/bound/operator_bound_checker.py)、[官方 Roofline 分析](https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_user_guide.md#roofline-bottleneck-analysis-chart)。本实现补充双侧核域、Fixpipe 和缺失值检查，不等同于官方检测器的逐项复刻。
 
-后续扩展边界：暂不支持断点上传、多用户隔离、跨任务缓存、跨轮对比和完整时间线查看。CLI/Skill 不依赖 Web 组件，原有调用方式不变。
+后续扩展边界：暂不支持断点上传、多用户隔离、跨任务缓存和跨轮对比。已支持所选 PID/Step Trace 的内嵌时间线；尚未接入 native Trace Processor、大文件分块查询、GPU/NPU 时钟同步或唯一 slice 自动选中。CLI/Skill 不依赖 Web 组件，原有调用方式不变。
 
 ## 模型参数量画像
 

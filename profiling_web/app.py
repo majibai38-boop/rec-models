@@ -149,6 +149,8 @@ def csv_download(path):
 
 
 def create_app(settings=None):
+    from .perfetto import installed, UI_ROOT, UI_URL, VERSION
+    perfetto_available = installed()
     settings = (settings or Settings()).prepare()
     store = Store(settings.data_dir)
     @asynccontextmanager
@@ -204,6 +206,9 @@ def create_app(settings=None):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+        if path.startswith('/perfetto/'):
+            response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+            response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'"
         if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -526,6 +531,21 @@ def create_app(settings=None):
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.get('/api/trace-viewer')
+    def trace_viewer():
+        return {'available': perfetto_available, 'url': UI_URL, 'version': VERSION}
+
+    @app.get('/api/jobs/{job_id}/trace-view/{side}')
+    def trace_view(job_id: str, side: Literal['gpu', 'npu'], attempt: str = Query(..., pattern=r'^[0-9a-f]{32}$')):
+        job, root = result_paths(job_id)
+        if root.name != attempt:
+            raise HTTPException(409, '结果版本已变化，请刷新后打开时间线')
+        name = side + '_trace.json'
+        path = root/'reports'/name
+        if name not in job['summary']['reports'] or not path.is_file() or path.is_symlink():
+            raise HTTPException(404, '旧结果缺少 Step Trace，请复用输入重新分析')
+        return FileResponse(path, media_type='application/json')
+
     @app.get("/api/jobs/{job_id}/artifacts/{name}")
     def artifact(job_id: str, name: str):
         job, root = result_paths(job_id)
@@ -545,6 +565,8 @@ def create_app(settings=None):
         _, root = result_paths(job_id)
         return call_evidence(root / "index.sqlite", call_id, offset, limit)
 
+    if perfetto_available:
+        app.mount('/perfetto', StaticFiles(directory=UI_ROOT, html=True), name='perfetto')
     static = Path(__file__).parent / "frontend" / "dist"
     if (static / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")
