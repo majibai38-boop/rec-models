@@ -92,6 +92,8 @@ class ManualSeed(BaseModel):
     attempt: str = Field(pattern=r'^[0-9a-f]{32}$')
     target_id: str = Field(min_length=1, max_length=100)
     candidate_id: str = Field(min_length=1, max_length=100)
+    ai_run_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    ai_proposal_id: str | None = Field(default=None, pattern=r'^P[1-8]$')
 
 
 class ManualConfirmation(ManualSeed):
@@ -153,15 +155,23 @@ def create_app(settings=None):
     perfetto_available = installed()
     settings = (settings or Settings()).prepare()
     store = Store(settings.data_dir)
+    from .ai_service import AIService, register_routes
+    ai = AIService(store)
     @asynccontextmanager
     async def lifespan(app):
         with worker_lock(settings.data_dir, "api.lock"):
             with store.connect() as db:
                 db.execute("UPDATE jobs SET uploading=0 WHERE uploading=1")
-            yield
+            ai.start()
+            try:
+                yield
+            finally:
+                await asyncio.to_thread(ai.close)
 
     app = FastAPI(title="GPU / NPU Profiling", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.store, app.state.settings = store, settings
+    app.state.ai = ai
+    register_routes(app, ai)
     upload_lock = asyncio.Lock()
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
@@ -317,12 +327,16 @@ def create_app(settings=None):
                 row = db.execute("SELECT status,uploading FROM jobs WHERE id=?", (job_id,)).fetchone()
                 if row["status"] in {"queued", "running"} or row["uploading"]:
                     raise Conflict("不能删除活动任务，请先取消并等待结束")
+                ai_rows = db.execute('SELECT id,status FROM ai_runs WHERE job_id=?', (job_id,)).fetchall()
+                if any(r['status'] in {'queued', 'running'} or r['id'] in ai.cancels for r in ai_rows):
+                    raise Conflict('请先取消 AI 分析并等待结束后删除任务')
                 target = store.path(job_id)
                 if target.is_symlink() or target.resolve().parent != (settings.data_dir / "jobs").resolve():
                     raise HTTPException(409, "任务目录不安全")
                 if target.exists():
                     await asyncio.to_thread(shutil.rmtree, target)
                 db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+                db.execute('DELETE FROM ai_runs WHERE job_id=?', (job_id,))
             return {"deleted": job_id}
 
     @app.get("/api/jobs/{job_id}/inputs/{role}")
@@ -426,6 +440,7 @@ def create_app(settings=None):
         job, root = result_paths(job_id)
         if job['attempt'] != body.attempt:
             raise Conflict('结果已变化，请刷新后重试')
+        ai.provenance(job_id, body)
         try:
             target, plan = manual_batch_plan(root/'index.sqlite', body.target_id, body.candidate_id, body.mode)
         except BatchConflict as exc:
@@ -451,9 +466,11 @@ def create_app(settings=None):
         links = job['manual'].get('links', [])
         check_manual_limit(links, plan['pair_count'])
         batch_id, created = uuid.uuid4().hex, time.time()
+        ai_source = ai.provenance(job_id, body)
         additions = [{'id': uuid.uuid4().hex, 'batch_id': batch_id, **pair,
                       'op_type': target['op_type'], 'device_id': target['device_id'], 'core_type': target['core_type'],
-                      'reason': body.reason.strip(), 'created': created, 'source_attempt': body.attempt}
+                      'reason': body.reason.strip(), 'created': created, 'source_attempt': body.attempt,
+                      **ai_source}
                      for pair in plan['pairs']]
         return store.enqueue_manual(job_id, body.attempt, [*links, *additions])
 
@@ -462,6 +479,7 @@ def create_app(settings=None):
         job, root = result_paths(job_id)
         if job['attempt'] != body.attempt:
             raise Conflict('结果已变化，请刷新后重试')
+        ai_source = ai.provenance(job_id, body)
         if not body.reason.strip():
             raise HTTPException(422,'请填写人工确认理由')
         links = job['manual'].get('links',[])
@@ -479,7 +497,7 @@ def create_app(settings=None):
                 'basis': 'manual_device_group' if target.get('kernel_group') else 'manual_confirmation',
                 'op_type':target['op_type'],'device_id':target['device_id'],'core_type':target['core_type'],
                 'reason':body.reason.strip(), 'created':time.time(), 'source_attempt':body.attempt,
-                'npu_time_us':target['time_us'], 'gpu_time_us':candidate['time_us']}
+                'npu_time_us':target['time_us'], 'gpu_time_us':candidate['time_us'], **ai_source}
         return store.enqueue_manual(job_id,body.attempt,[*links,link])
 
     @app.post('/api/jobs/{job_id}/manual-links/{link_id}/undo',status_code=202)

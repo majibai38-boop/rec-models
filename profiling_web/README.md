@@ -1,6 +1,6 @@
 # Profiling Workbench：单机 Web 工作台
 
-复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，不调用外部 AI 服务。
+复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，默认不调用外部 AI 服务。可选接入 [DeepSeek Harness / Codex 辅助分析](AI.md)，提供带证据的解释、关联建议及人工确认后的批量应用。
 
 本服务用于 **GPU/NPU 双侧实测比较**，默认端口为 **8000**，输入为 GPU Trace、NPU Trace 与 NPU `kernel_details.csv`。如果只有一端采集、需要维护芯片规格或预测目标设备性能，请使用独立的 [Workload Modeler](../workload_modeler/README.md)（默认端口 **8770**）。两者任务与数据目录独立，Workload 的预测倍率不等同于本服务的实测 GPU/NPU 比值；完整对照见[仓库首页](../README.md#选择工具)。
 

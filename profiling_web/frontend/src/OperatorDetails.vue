@@ -7,7 +7,7 @@ import TraceViewer from './TraceViewer.vue'
 import {csvCell} from './viewState.js'
 import {fmt, ratioClass, tensorText, numel} from './operatorDetailView.js'
 const props = defineProps({job:Object, scope:Object, state:Object, api:Function, detailed:Boolean})
-const emit = defineEmits(['update', 'whole', 'coverage', 'upgrade', 'types'])
+const emit = defineEmits(['update', 'whole', 'coverage', 'upgrade', 'types', 'ai'])
 const data=ref(null), chartData=ref([]), chartTotal=ref(0), units=ref(null), selected=ref(null), error=ref('')
 const groupLoading=ref(false), unitLoading=ref(false), exporting=ref(false), dialog=ref(null)
 const unitSection=ref(null)
@@ -105,7 +105,7 @@ async function exportGroups() {
 </script>
 <template>
   <section class="operator-details">
-    <div class="panel-heading"><h2>算子详情<span v-if="scope"> · {{ scope.op_type }} / {{ scope.device_id || '未提供设备' }} / {{ scope.core_type }}</span></h2><button @click="emit('types')">返回类型对比</button></div>
+    <div class="panel-heading"><h2>算子详情<span v-if="scope"> · {{ scope.op_type }} / {{ scope.device_id || '未提供设备' }} / {{ scope.core_type }}</span></h2><div class="toolbar"><button v-if="scope" @click="emit('ai',scope)">AI 分析此类型</button><button @click="emit('types')">返回类型对比</button></div></div>
     <p v-if="!scope?.op_type" class="notice">请在类型对比中选择一个 NPU 类型，点击“详细对比”。</p>
     <template v-else>
       <p class="muted">结果版本 {{ state.attempt || job.attempt }} · 事件时长之和（非墙钟时间）。按完整元数据、模块、两侧 kernel 组成分组；不按耗时或元素数推断映射。</p>

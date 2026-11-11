@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-const props = defineProps({ job: Object, type: Object, api: Function })
+const props = defineProps({ job: Object, type: Object, api: Function, seed: Object })
 const emit = defineEmits(['close', 'submitted', 'upgrade'])
 const data = ref(null), selected = ref(''), targetId = ref(''), search = ref(''), reason = ref('')
 const loading = ref(false), saving = ref(false), error = ref(''), offset = ref(0), gpuOffset = ref(0), dialog = ref(null)
@@ -21,6 +21,8 @@ const templateLabel = (r) => r?.template_position ? `当前 shape/dtype 第 ${r.
 const positionLabel = (p) => p ? `${p.index}/${p.total}` : '未知'
 const candidate = computed(() => data.value?.candidates.find(r => r.id === selected.value))
 const target = computed(() => data.value?.target)
+const aiSource = computed(() => props.seed && targetId.value===props.seed.target_id && selected.value===props.seed.candidate_id
+  ? {ai_run_id:props.seed.ai_run_id,ai_proposal_id:props.seed.ai_proposal_id} : {})
 const batchCoverage = computed(() => props.type.npu_total_time_us > 0
   ? fmt(Math.min(100, 100 * ((props.type.npu_comparable_time_us || 0) + (batchPreview.value?.npu_time_us || 0)) / props.type.npu_total_time_us)) + '%'
   : '—')
@@ -49,7 +51,7 @@ async function submit() {
   saving.value = true; error.value = ''
   try {
     const job = await props.api(`/jobs/${props.job.id}/manual-links`, 'POST', {
-      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, reason:reason.value.trim(),
+      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, reason:reason.value.trim(), ...aiSource.value,
       confirm_device_group:!!target.value?.kernel_group && groupConfirmed.value})
     emit('submitted', job)
   } catch(e) {error.value = e.message} finally {saving.value = false}
@@ -60,7 +62,7 @@ async function previewBatch() {
   preparingBatch.value=true; batchPreview.value=null; batchIssue.value=null; error.value=''
   try {
     const result = await props.api(`/jobs/${props.job.id}/manual-batch/preview`, 'POST', {
-      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, mode:batchMode.value})
+      attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value, mode:batchMode.value, ...aiSource.value})
     if (seq === batchSequence) batchPreview.value=result
   } catch(e) {if (seq === batchSequence) {error.value=e.message; batchIssue.value=e.detail || null}}
   finally {if (seq === batchSequence) preparingBatch.value=false}
@@ -89,7 +91,7 @@ async function submitBatch() {
   try {
     emit('submitted', await props.api(`/jobs/${props.job.id}/manual-batch`, 'POST', {
       attempt:data.value.attempt, target_id:targetId.value, candidate_id:selected.value,
-      mode:batchPreview.value.mode, preview_token:batchPreview.value.preview_token, reason:reason.value.trim()}))
+      mode:batchPreview.value.mode, preview_token:batchPreview.value.preview_token, reason:reason.value.trim(), ...aiSource.value}))
   } catch(e) {error.value=e.message} finally {saving.value=false}
 }
 async function undo(link) {
@@ -105,7 +107,18 @@ function key(e) {
   if (e.shiftKey && document.activeElement === first) {e.preventDefault(); last?.focus()}
   else if (!e.shiftKey && document.activeElement === last) {e.preventDefault(); first?.focus()}
 }
-onMounted(() => {previousFocus = document.activeElement; dialog.value.focus(); document.addEventListener('keydown',key); load()})
+onMounted(async () => {
+  previousFocus = document.activeElement; dialog.value.focus(); document.addEventListener('keydown',key)
+  if(props.seed){
+    if(props.seed.attempt!==props.job.attempt){error.value='AI 建议对应旧结果，请重新分析';return}
+    targetId.value=props.seed.target_id
+  }
+  await load()
+  if(props.seed && data.value?.candidates.some(r=>r.id===props.seed.candidate_id)){
+    selected.value=props.seed.candidate_id
+    reason.value=('AI 建议，经人工确认：'+props.seed.reason).slice(0,500)
+  }
+})
 onBeforeUnmount(() => {sequence++; batchSequence++; document.removeEventListener('keydown',key); previousFocus?.focus()})
 </script>
 
@@ -114,6 +127,7 @@ onBeforeUnmount(() => {sequence++; batchSequence++; document.removeEventListener
     <section ref="dialog" class="drawer manual-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-title" tabindex="-1" :aria-busy="loading || saving">
       <button class="close" aria-label="关闭补充关联" :disabled="saving" @click="$emit('close')">×</button>
       <h2 id="manual-title">{{ type.op_type }} · 补充关联</h2>
+      <p v-if="props.seed" class="notice">已带入 AI 推荐配对。请核对 shape、CPU 调用位置和工作量后，选择单组确认或批量预览；AI 推荐本身不是等价证明。</p>
       <p class="muted">{{ type.device_id }} / {{ type.core_type }} · 当前可比时间覆盖率 {{ fmt(type.coverage.comparable.time_pct) }}%</p>
       <p class="notice">只关联尚未分配的 GPU 计算 kernel，按整组比较；不修改真实 CPU owner，不逐个分摊时间。人工确认不等于自动验证。</p>
       <p v-if="error" role="alert" class="error">{{ error }}</p>

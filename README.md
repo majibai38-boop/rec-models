@@ -8,6 +8,7 @@
   <a href="#快速开始">快速开始</a> ·
   <a href="#workload-使用流程与结果">Workload 使用流程</a> ·
   <a href="profiling_web/README.md">Profiling 文档</a> ·
+  <a href="profiling_web/AI.md">AI 辅助分析</a> ·
   <a href="workload_modeler/README.md">Workload 文档</a> ·
   <a href="LICENSE">Apache-2.0</a>
 </p>
