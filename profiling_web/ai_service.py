@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 import uuid
+import shutil
 
 from fastapi import HTTPException
 from pydantic import Field, model_validator
@@ -12,6 +13,7 @@ from typing import Literal
 
 from .ai_backends import AIConfig, BackendError, run_backend
 from .ai_evidence import StrictModel, build_evidence, validate_analysis
+from .ai_trace import trace_info, trace_files, session_path, write_session, reusable_session
 from .store import Conflict
 
 
@@ -30,6 +32,7 @@ class Request(StrictModel):
     parent_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
     mode: Literal['auto','overall','coverage','shape','mapping'] = 'auto'
     exclude_types: list[str] = Field(default_factory=list, max_length=20)
+    trace_mode: Literal['none', 'attach', 'reuse'] = 'none'
 
     @model_validator(mode='after')
     def check(self):
@@ -39,6 +42,8 @@ class Request(StrictModel):
             raise ValueError('请确认将所选范围的统计、元数据和问题发送给模型服务')
         if any(not t.strip() or len(t)>200 for t in self.exclude_types):
             raise ValueError('排除类型必须为非空名称，且不超过 200 字符')
+        if self.trace_mode == 'reuse' and not self.parent_id:
+            raise ValueError('复用 Trace 必须选择要继续的会话')
         return self
 
 
@@ -84,6 +89,18 @@ class AIService:
             parent = self.get(job_id, body.parent_id)
             if parent['stale'] or parent['attempt'] != body.attempt or parent['status'] != 'succeeded':
                 raise Conflict('只能继续当前结果版本中成功完成的分析，请新建会话')
+        job = self.current(job_id, body.attempt)
+        if body.trace_mode != 'none':
+            try:
+                if body.trace_mode == 'reuse':
+                    reusable_session(self.store.path(job_id), parent, body.provider,
+                                     self.config.models[body.provider], body.attempt)
+                else:
+                    info = trace_info(self.store.path(job_id)/'attempts'/body.attempt, job)
+                    if not info['within_limit']:
+                        raise HTTPException(413, f"完整 Trace 合计 {info['total_bytes']} 字节，超过发送上限 {info['max_bytes']} 字节；请缩小 Step 范围或仅发送统计证据")
+            except BackendError as exc:
+                raise Conflict(str(exc)) from None
         provider = next(p for p in self.config.availability()['providers'] if p['id'] == body.provider)
         if not provider['available']:
             raise HTTPException(503, provider['reason'])
@@ -127,6 +144,16 @@ class AIService:
         for field in ('request', 'evidence', 'result'):
             result[field] = json.loads(result[field]) if result[field] else None
         result['stale'] = result['attempt'] != job['attempt'] or job['status'] != 'succeeded'
+        result['trace_context'] = {'reusable': False, 'reason': ''}
+        if (result.get('evidence') or {}).get('trace'):
+            try:
+                if result['stale'] or result['status'] != 'succeeded':
+                    raise BackendError('仅当前结果版本中成功完成的会话可复用')
+                reusable_session(self.store.path(job_id), result, result['provider'],
+                                 self.config.models[result['provider']], result['attempt'])
+                result['trace_context']['reusable'] = True
+            except BackendError as exc:
+                result['trace_context']['reason'] = str(exc)
         return result
 
     def conversation(self, job_id, parent_id, attempt):
@@ -156,9 +183,48 @@ class AIService:
         run = self.get(job_id, ident)
         if run['status'] in {'queued', 'running'} or ident in self.cancels:
             raise Conflict('请先取消 AI 分析并等待进程退出')
-        with self.store.connect() as db:
+        with self.lock, self.store.connect() as db:
+            if db.execute("SELECT 1 FROM ai_runs WHERE job_id=? AND status IN ('queued','running')", (job_id,)).fetchone():
+                raise Conflict('请等待本任务的 AI 分析结束后再删除历史，避免清理正在复用的会话')
             db.execute('DELETE FROM ai_runs WHERE id=? AND job_id=?', (ident, job_id))
+            remaining = [json.loads(r['evidence']) for r in db.execute(
+                'SELECT evidence FROM ai_runs WHERE job_id=? AND evidence IS NOT NULL', (job_id,))]
+            key = (run.get('evidence') or {}).get('trace', {}).get('session_key')
+            if key and not any(e.get('trace', {}).get('session_key') == key for e in remaining):
+                path = session_path(self.store.path(job_id), key)
+                if path.exists():
+                    shutil.rmtree(path)
         return {'deleted': ident}
+
+    def prepare_trace(self, ident, job, body, evidence, root):
+        """Only explicit attach creates a session; failed reuse never resends files."""
+        if body.trace_mode == 'none':
+            return None, (), None
+        info = trace_info(root, job)
+        if body.trace_mode == 'attach' and not info['within_limit']:
+            raise BackendError('完整 Trace 超过发送上限；请缩小 Step 范围或仅发送统计证据')
+        info = trace_info(root, job, hashes=True)
+        job_path = self.store.path(job['id'])
+        if body.trace_mode == 'reuse':
+            parent = self.get(job['id'], body.parent_id)
+            key, state = reusable_session(job_path, parent, body.provider,
+                                          self.config.models[body.provider], body.attempt)
+            if state['files'] != info['files']:
+                raise BackendError('Trace 内容已变化，不能复用旧会话；请重新附加 Trace')
+        else:
+            key = uuid.uuid4().hex
+            state = {'provider': body.provider, 'model': self.config.models[body.provider],
+                     'attempt': body.attempt, 'files': info['files'], 'backend_id': None}
+        path = session_path(job_path, key)
+        state.update(ready=False, pending_run=ident)
+        write_session(path, state)  # Dirty until BOTH inference and validation succeed.
+        info.update(mode=body.trace_mode, session_key=key,
+                    attached_bytes=info['total_bytes'] if body.trace_mode == 'attach' else 0)
+        evidence['trace'] = info
+        evidence['items'].append({'id': f"E{len(evidence['items'])+1}", 'kind': 'trace_manifest', 'data': info})
+        session = {'path': path, 'backend_id': state['backend_id']}
+        attachments = tuple(zip(trace_files(root, job), info['files'])) if body.trace_mode == 'attach' else ()
+        return session, attachments, state
 
     def provenance(self, job_id, body):
         if not body.ai_run_id and not body.ai_proposal_id:
@@ -199,15 +265,27 @@ class AIService:
                                           body.question, body.mode, body.exclude_types)
                 evidence['conversation'] = self.conversation(job['id'], body.parent_id, job['attempt'])
                 evidence['conversation_limit'] = '最多继承最近 4 轮；旧回答为待核实上下文，引用需以当前证据为准'
+                session, attachments, state = self.prepare_trace(ident, job, body, evidence, root)
+                if session:
+                    evidence['conversation_limit'] += '；完整 Trace 使用独立 CLI 会话，复用时保留其后端历史（可能被模型压缩）'
                 self._update(ident, evidence=json.dumps(evidence, ensure_ascii=False))
                 scratch = self.store.path(job['id'])/'ai-scratch'
                 scratch.mkdir(exist_ok=True, mode=0o700)
-                text = run_backend(self.config, body.provider, body.question, evidence, scratch, event)
+                args = (self.config, body.provider, body.question, evidence, scratch, event)
+                output = run_backend(*args, session=session, attachments=attachments) if session else run_backend(*args)
+                text = output['text'] if session else output
                 try:
                     result = validate_analysis(text, evidence)
                 except ValueError:
                     raise BackendError('AI 返回内容未通过结构/证据编号校验，未生成可应用的关联；请重试或缩小问题范围') from None
-                self._update(ident, status='succeeded', result=json.dumps(result, ensure_ascii=False))
+                with self.lock:
+                    if event.is_set():
+                        raise BackendError('AI 分析已取消')
+                    if session:
+                        state.update(ready=True, last_run=ident, backend_id=output['backend_id'])
+                        state.pop('pending_run', None)
+                        write_session(session['path'], state)
+                    self._update(ident, status='succeeded', result=json.dumps(result, ensure_ascii=False))
             except (BackendError, Conflict) as exc:
                 self._update(ident, status='failed', error=str(exc))
             except Exception as exc:
@@ -224,6 +302,14 @@ def register_routes(app, service):
     @app.get('/api/ai/config')
     def config():
         return service.config.availability()
+
+    @app.get('/api/jobs/{job_id}/ai-trace')
+    def trace(job_id: str, attempt: str):
+        job = service.current(job_id, attempt)
+        try:
+            return trace_info(service.store.path(job_id)/'attempts'/job['attempt'], job)
+        except BackendError as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.get('/api/jobs/{job_id}/ai-runs')
     def runs(job_id: str):

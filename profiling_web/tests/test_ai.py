@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -8,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from profiling_web.ai_backends import AIConfig, BackendError, prepare_command, run_backend
+from profiling_web.ai_backends import AIConfig, BackendError, prepare_command, run_backend, session_result
 from profiling_web.ai_evidence import build_evidence, validate_analysis, prompt_for
 from profiling_web.tests.test_manual_links import ManualWebTest
 
@@ -151,6 +152,77 @@ class AIWebTest(unittest.TestCase):
         self.store.update(self.ident,attempt='f'*32)
         self.assertEqual(self.client.post(self.base+'/ai-runs',json=self.body).status_code,409)
 
+    def test_trace_opt_in_reuse_invalidation_and_cleanup(self):
+        self.setup_job()
+        preview=self.client.get(self.base+'/ai-trace',params={'attempt':self.job['attempt']})
+        self.assertEqual(preview.status_code,200,preview.text)
+        self.assertEqual(len(preview.json()['files']),2)
+        sent=[]
+        def fake(cfg,p,q,e,scratch,cancelled,session=None,attachments=()):
+            sent.append((session,attachments))
+            (session['path']/'home').mkdir(exist_ok=True)
+            return {'text':response(e),'backend_id':'session-test'}
+        self.body['trace_mode']='attach'
+        first=self.start_fake(fake)
+        self.assertEqual(first['status'],'succeeded',first)
+        self.assertTrue(first['trace_context']['reusable'])
+        self.assertEqual(len(sent[0][1]),2)
+        self.assertEqual(first['evidence']['trace']['attached_bytes'],preview.json()['total_bytes'])
+        self.assertNotIn('traceEvents',json.dumps(first))
+        self.body.update(parent_id=first['id'],trace_mode='reuse')
+        second=self.start_fake(fake)
+        self.assertEqual(second['status'],'succeeded',second)
+        self.assertEqual(sent[1][1],())
+        self.assertEqual(sent[1][0]['backend_id'],'session-test')
+        self.assertEqual(sent[0][0]['path'],sent[1][0]['path'])
+        self.assertEqual(second['evidence']['trace']['attached_bytes'],0)
+        self.assertFalse(self.client.get(self.base+'/ai-runs/'+first['id']).json()['trace_context']['reusable'])
+        with patch.dict(os.environ,{'CODEX_API_KEY':'fake','DEEPSEEK_API_KEY':'fake'}):
+            self.assertEqual(self.client.post(self.base+'/ai-runs',json=self.body).status_code,409) # old parent
+            self.body['parent_id']=second['id']
+            self.assertEqual(self.client.post(self.base+'/ai-runs',json={**self.body,'provider':'deepseek'}).status_code,409)
+        # Refusing Trace must not resume a context which contains it.
+        self.body['trace_mode']='none'
+        third=self.start_fake()
+        self.assertEqual(third['status'],'succeeded',third)
+        self.assertNotIn('trace',third['evidence'])
+        # Mutation is detected before backend invocation; no silent resend.
+        path=self.store.path(self.ident)/'attempts'/self.job['attempt']/'reports/gpu_trace.json'
+        path.write_bytes(path.read_bytes()+b' ')
+        self.body['trace_mode']='reuse'
+        failed=self.start_fake(lambda *a,**k: self.fail('changed Trace must not be sent'))
+        self.assertEqual(failed['status'],'failed')
+        self.assertIn('内容已变化',failed['error'])
+        for run in (first,second):
+            self.assertEqual(self.client.delete(self.base+'/ai-runs/'+run['id']).status_code,200)
+        self.assertFalse(sent[0][0]['path'].exists())
+
+    def test_trace_limits_missing_and_invalid_sessions(self):
+        self.setup_job()
+        self.assertEqual(self.client.post(self.base+'/ai-runs',json={**self.body,'trace_mode':'reuse'}).status_code,422)
+        self.assertEqual(self.client.post(self.base+'/ai-runs',json={**self.body,'trace_mode':'attach','share_evidence':False}).status_code,422)
+        with patch.dict(os.environ,{'PROFILING_AI_TRACE_MAX_BYTES':'1024'}):
+            self.assertEqual(self.client.post(self.base+'/ai-runs',json={**self.body,'trace_mode':'attach'}).status_code,413)
+        path=self.store.path(self.ident)/'attempts'/self.job['attempt']/'reports/gpu_trace.json'
+        path.unlink()
+        self.assertEqual(self.client.get(self.base+'/ai-trace',params={'attempt':self.job['attempt']}).status_code,409)
+        self.assertEqual(self.start_fake()['status'],'succeeded') # old results still support statistics
+
+    def test_failed_trace_turn_cannot_be_resumed(self):
+        self.setup_job()
+        self.body['trace_mode']='attach'
+        def fake(cfg,p,q,e,scratch,cancelled,session=None,attachments=()):
+            (session['path']/'home').mkdir(exist_ok=True)
+            return {'text':response(e),'backend_id':'session-test'}
+        first=self.start_fake(fake)
+        self.body.update(trace_mode='reuse',parent_id=first['id'])
+        def failing(*args,**kwargs):
+            raise BackendError('会话失败')
+        failed=self.start_fake(failing)
+        self.assertEqual(failed['status'],'failed',failed)
+        parent=self.client.get(self.base+'/ai-runs/'+first['id']).json()
+        self.assertFalse(parent['trace_context']['reusable'])
+
 
 class BackendTest(unittest.TestCase):
     def setUp(self):
@@ -189,3 +261,57 @@ class BackendTest(unittest.TestCase):
         self.config.timeout=.1
         with self.assertRaisesRegex(BackendError,'超时'):run_backend(self.config,'deepseek','q',{},self.root,threading.Event())
         self.assertEqual(list(self.root.glob('ai-*')),[])
+
+    def test_persistent_commands_and_event_validation(self):
+        for provider in ('codex','deepseek'):
+            work=self.root/provider;work.mkdir()
+            session={'path':work,'backend_id':'session-test'}
+            command,env,answer=prepare_command(self.config,provider,work,session)
+            self.assertNotIn('--ephemeral',command)
+            self.assertIn('--json',command)
+            self.assertIn('session-test',command)
+            if provider=='codex':
+                self.assertIn('resume',command)
+                self.assertIn('features.shell_tool=false',command)
+            else:
+                self.assertIn('--session-id',command)
+                self.assertIn('sessionId: !!js ctx.headlessStartup.sessionId',(work/'analysis.patch.yml').read_text())
+        ds=json.dumps({'type':'final','sessionId':'session-test','reason':{'kind':'completed'},'text':'{}'})
+        self.assertEqual(session_result('deepseek',ds,None,'session-test')['text'],'{}')
+        with self.assertRaises(BackendError):session_result('deepseek',ds,None,'wrong-session')
+        with self.assertRaises(BackendError):session_result('deepseek',ds.replace('completed','error'),None)
+        cx='{"type":"thread.started","thread_id":"session-test"}\n{"type":"turn.completed"}'
+        self.assertEqual(session_result('codex',cx,'{}')['backend_id'],'session-test')
+        with self.assertRaises(BackendError):session_result('codex',cx.replace('turn.completed','turn.failed'),'{}')
+
+    def test_persistent_process_sends_attachment_once_and_cleans_auth(self):
+        script=self.root/'session_fake.py'
+        script.write_text('''import json,sys,os
+from pathlib import Path
+prompt=sys.stdin.read()
+result=json.dumps({'attached':prompt.count('TRACE_ATTACHMENT_JSON gpu_trace.json:'),'cwd':os.getcwd()})
+if '-o' in sys.argv:
+    Path(sys.argv[sys.argv.index('-o')+1]).write_text(result)
+    print(json.dumps({'type':'thread.started','thread_id':'session-test'}))
+    print(json.dumps({'type':'turn.completed'}))
+else:
+    print(json.dumps({'type':'final','sessionId':'session-test','reason':{'kind':'completed'},'text':result}))
+''',encoding='utf-8')
+        trace=self.root/'gpu_trace.json';raw=b'{"traceEvents":[{"name":"private-event"}]}'
+        trace.write_bytes(raw)
+        meta={'name':trace.name,'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
+        for provider in ('codex','deepseek'):
+            self.config.commands[provider]=[sys.executable,str(script)]
+            path=self.root/provider;path.mkdir();(path/'home').mkdir()
+            (path/'home'/'auth.json').write_text('{}')
+            session={'path':path,'backend_id':None}
+            first=run_backend(self.config,provider,'q',{},self.root,threading.Event(),session,[(trace,meta)])
+            session['backend_id']=first['backend_id']
+            second=run_backend(self.config,provider,'q2',{},self.root,threading.Event(),session)
+            self.assertEqual(json.loads(first['text'])['attached'],1)
+            self.assertEqual(json.loads(second['text'])['attached'],0)
+            self.assertEqual(json.loads(first['text'])['cwd'],json.loads(second['text'])['cwd'])
+            self.assertFalse((path/'home'/'auth.json').exists())
+        trace.write_bytes(raw+b' ')
+        with self.assertRaisesRegex(BackendError,'已变化'):
+            run_backend(self.config,'deepseek','q',{},self.root,threading.Event(),session,[(trace,meta)])

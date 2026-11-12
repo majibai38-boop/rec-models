@@ -12,11 +12,22 @@ AI 现有独立任务页签。从类型行或算子详情点击「AI 分析」�
 
 1. 完成 GPU/NPU 分析后，点击结果顶部「AI 辅助分析」，或类型行中的「AI 分析」。算子详情页也可以分析当前类型。
 2. 选择 **DeepSeek Harness** 或 **Codex CLI**，输入问题，例如“检查 IndexAdd 覆盖率低是否与两侧 CPU 嵌套调用不同有关”。
-3. 确认允许发送本次问题及统计、名称、模块、shape/dtype、调用样本后开始。不会发送完整 Trace；推理仍可能经互联网访问所选服务，并产生模型费用。
+3. 默认仅发送问题及统计、名称、模块、shape/dtype、调用样本。可在「完整 Trace」中主动选择附加本次选中 Step 的完整 GPU/NPU JSON；确认发送范围后开始。推理可能经互联网访问所选服务，并产生模型费用。
 4. 查看结论、局限和引用的 `E1` 等证据。点击证据编号可检查模型实际收到的字段。支持分析历史、取消、下载分析 JSON 和删除记录。
 5. 有关联建议时，点击「核对并预览关联」，进入原有人工关联窗口，已选中推荐配对并带入理由。核对后可单组确认，也可预览同模板/同模块批量范围，再一次确认。在该类型的「人工补充关联」中可撤销。
 
 AI 不直接改映射。人工确认后的来源仍是 `manual`，不会改为 Direct；历史另外保留 `ai_run_id`、`ai_proposal_id`、`ai_provider`。修改推荐配对后不再沿用该提案来源。结果版本更新后，旧建议只供阅读，不能应用。
+
+### 完整 Trace 与会话复用
+
+- **不发送完整 Trace（默认）**：保持原有统计证据路径。即使上一轮附加过 Trace，本轮也不会恢复那个后端会话；勾选追问时仅带最近 4 轮问答摘要。已发送给模型服务的数据不能撤回。
+- **首次附加 / 重新附加**：发送与「更多输出」及时间线相同的 `gpu_trace.json`、`npu_trace.json`，范围为本次选中 Step/PID（选择全量时即为该次全量导出）。不按当前算子类型或排除类型进一步裁剪；完整保留导出 JSON 的事件参数，可能包含路径等元数据。页面显示两份文件大小，服务端校验 SHA-256，不静默截断。
+- **复用已发送的 Trace**：首次成功后默认选中。使用 Codex `exec resume` 或 Harness `--session-id` 继续服务器专属 CLI 会话；本轮 stdin 不再附加 Trace 正文，仅增加问题、最新统计证据和文件清单。**这不是模型服务的文件上传缓存承诺**，后端仍可能传输、计费历史 Token，或压缩旧上下文。模型无法找回具体事件时，需明确说明并由用户主动选择重新附加。
+- 只允许同任务、同结果版本、同后端及配置模型、同文件哈希、同会话最新成功轮次复用。旧分支、更换模型、CLI 会话丢失、超时、取消或校验失败后不能继续复用；不会自动重发文件。重新附加会创建独立后端会话；勾选追问时仍保留最近 4 轮摘要。
+- 附件合计默认上限 **2 MiB**，可通过 `PROFILING_AI_TRACE_MAX_BYTES` 调整（1 KiB–64 MiB）。这是应用的字节上限，不是模型上下文容量保证；还需为证据、历史和输出预留 Token。超限会在提交前提示，可缩小 Step 范围或仅使用统计。不要把大 Trace 直接塞进不支持相应上下文的模型。
+- 本地 CLI 会话保存在任务的 `ai-sessions/`，可能含完整 Trace、对话和 CLI 持久化事件。网页/分析 JSON 只返回附件清单和哈希，不复制 Trace 正文或公开 CLI 推理事件。删除最后一条引用该会话的 AI 记录时清理本地会话；删除最新轮次后不能从旧轮次复用。删除任务也会清理会话；模型服务端留存策略由提供方决定。
+
+会话协议参考 [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode) 和 [Harness headless](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/headless/README.md)。仅保存成功且通过结果校验的会话为可复用状态。
 
 ## 服务端配置
 
@@ -33,6 +44,7 @@ CLI、认证和模型配置全部在 **部署 Web 的主机** 上完成，其他
 | `PROFILING_AI_CODEX_AUTH_HOME` | 专用于 Web 的 Codex 登录目录，应包含 `auth.json` |
 | `PROFILING_AI_CODEX_MODEL` | 可选，留空使用 Codex 默认模型 |
 | `PROFILING_AI_TIMEOUT` | 每次超时秒数，默认 180，范围 10–900 |
+| `PROFILING_AI_TRACE_MAX_BYTES` | 完整 Step Trace 附件合计字节上限，默认 2097152，范围 1024–67108864 |
 
 COMMAND 是管理员提供的可执行文件和固定参数数组，不是 shell 命令。推荐绝对路径。Windows 不接受 `.cmd`、`.bat`、`.ps1`；使用原生 `.exe`，或 `["node.exe", "CLI脚本绝对路径"]`。不要在 COMMAND 中放密钥或绕过审批参数。
 
@@ -51,11 +63,11 @@ $env:PROFILING_AI_DEEPSEEK_COMMAND = '["C:/ai/harness/Scripts/dsh.exe"]'
 python -m profiling_web --port 8000
 ```
 
-每次生成独立 `DSH_HOME`，不沿用日常 Harness 配置和 GUI 登录。自动挂载只读分析 overlay，关闭文件、shell、网络检索、子代理等工具，并在 required headless runner 初始化时安装禁止工具执行的 guard。不兼容该 API 时停止，不降级到无限制模式。禁用额外会话遥测及模型生成标题，运行结束删除临时会话和原始输出。
+使用专属 `DSH_HOME`，不沿用日常 Harness 配置和 GUI 登录。统计模式每轮临时创建，完整 Trace 模式持久化以便复用。自动挂载只读分析 overlay，关闭文件、shell、网络检索、子代理等工具，并在 required headless runner 初始化时安装禁止工具执行的 guard。不兼容该 API 时停止，不降级到无限制模式。禁用额外会话遥测及模型生成标题，运行结束删除临时 stdin/stdout/stderr；完整 Trace 模式保留 CLI 会话。此模式额外要求支持 `--json`、`--session-id` 以及持久化会话查询服务。
 
 ### Codex
 
-安装 [Codex CLI](https://learn.chatgpt.com/docs/cli/reference)，需支持 `exec`、`--output-schema`、`--ephemeral`、`--ignore-user-config` 和 `--ignore-rules`。使用 [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)，不依赖桌面正在打开的聊天。
+安装 [Codex CLI](https://learn.chatgpt.com/docs/cli/reference)，需支持 `exec`、`--output-schema`、`--ephemeral`、`--ignore-user-config` 和 `--ignore-rules`。完整 Trace 模式额外要求 `--json`、`exec resume`（含输出 Schema 参数），并取消 `--ephemeral` 以保留会话。使用 [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)，不依赖桌面正在打开的聊天。
 
 ```powershell
 $env:PROFILING_AI_ENABLED = '1'
@@ -74,16 +86,16 @@ codex -c cli_auth_credentials_store='"file"' login
 # $env:PROFILING_AI_CODEX_AUTH_HOME = 'C:/ai/profiling-codex-auth'
 ```
 
-Web 仅复制该目录的 `auth.json` 到单次私有目录，不沿用个人配置、MCP 和插件。设置 read-only、never approval，关闭 shell、apps、hooks、web search 等工具。凭据过期时需在专用目录重新登录，临时运行中的凭据刷新不回写。
+Web 仅复制该目录的 `auth.json` 到私有运行目录（完整 Trace 模式为专属会话目录），正常退出后删除，不沿用个人配置、MCP 和插件。设置 read-only、never approval，关闭 shell、apps、hooks、web search 等工具。凭据过期时需在专用目录重新登录，临时运行中的凭据刷新不回写。
 
 ## 数据范围与限制
 
 - 读取现有 SQLite 索引，不重解析 Trace。全任务汇总覆盖全部所选类型；明细按问题及模式选取前 6 类型，每类型最多 4 条诊断、3 个 shape 组（shape 模式 8 个）、1 个 NPU 待关联调用及前 3 GPU 候选。字段数组最多 20 项，记录预算约 96 KB，截取/省略会标记。具体类型入口更适合深入排查。
-- 这是已有证据分析及候选推荐，不是无限翻查 Trace 的交互代理。未采样调用不会被模型判断，没有建议不代表没有可关联项。无 CPU 场景仍需人工确认两侧整组语义，数量或耗时相近不是等价证明。
+- 这是已有证据分析及候选推荐，不是无限翻查 Trace 的交互代理。统计模式未采样调用不会被模型判断；附加完整 Trace 后可解释其中事件，但关联提案仍只能来自当前受控候选集合。没有建议不代表没有可关联项。无 CPU 场景仍需人工确认两侧整组语义，数量或耗时相近不是等价证明。
 - 响应需符合 JSON Schema，引用与提案 ID 需属于本次证据/候选集合，否则不产生可应用建议。结构校验不能证明模型文字判断正确。
 - 独立队列单并发，最多 8 个排队/运行分析；每任务最多 1 个活动分析、50 条历史。CLI 单份输出上限 2 MB，超时/取消终止进程树。没有硬性计费 token 上限，费用由模型服务计量。
-- 问题、状态、证据、结果持久化在任务数据库，刷新可继续查看。原始 stderr/推理过程不公开或长期保留。服务重启标记旧活动分析为中断，需重新发起。删除任务需先结束 AI 分析，并一并删除 AI 历史。
-- 服务数据目录应保持私有。断电/强制终止可能留下 `jobs/<id>/ai-scratch/` 临时文件，包括短暂凭据副本；确认没有 CLI 运行后可由管理员清理。建议使用独立系统用户部署。
+- 问题、状态、证据、结果持久化在任务数据库，刷新可继续查看。原始 stderr 不公开或长期保留；完整 Trace 模式的 CLI 会话可能持久化推理事件，但不通过网页返回。服务重启标记旧活动分析为中断，需重新发起。删除任务需先结束 AI 分析，并一并删除 AI 历史。
+- 服务数据目录应保持私有。断电/强制终止可能留下 `jobs/<id>/ai-scratch/` 或 `ai-sessions/` 文件，包括短暂凭据副本；正常退出会删除复制的登录凭据，确认没有 CLI 运行后可由管理员清理中断残留。建议使用独立系统用户部署。
 - 回归测试使用合成数据和模拟模型，不自动使用桌面登录，也不发送真实用户 profiling 数据。真实服务的认证、额度及网络需在部署环境验证。
 
 ## API
@@ -91,9 +103,10 @@ Web 仅复制该目录的 `auth.json` 到单次私有目录，不沿用个人配
 | 操作 | 路径 |
 | --- | --- |
 | 后端就绪状态，无密钥 | `GET /api/ai/config` |
+| 完整 Step Trace 清单与字节上限，不读正文 | `GET /api/jobs/{id}/ai-trace?attempt={attempt}` |
 | 发起分析 | `POST /api/jobs/{id}/ai-runs` |
 | 历史 / 单次结果 | `GET /api/jobs/{id}/ai-runs[/{run_id}]` |
 | 取消 | `POST /api/jobs/{id}/ai-runs/{run_id}/cancel` |
 | 删除历史 | `DELETE /api/jobs/{id}/ai-runs/{run_id}` |
 
-发起请求包括 `attempt`、`provider: deepseek|codex`、`question`、`share_evidence:true`，以及可选 `scope:{op_type,device_id,core_type}`。认证/Origin 校验与其余 API 相同。关联仍使用 `manual-batch/preview`、`manual-batch` 或 `manual-links`；额外传 `ai_run_id`、`ai_proposal_id` 时校验来源和版本，不新增绕过原校验的应用接口。
+发起请求包括 `attempt`、`provider: deepseek|codex`、`question`、`share_evidence:true`，以及可选 `scope:{op_type,device_id,core_type}`、`parent_id`、`trace_mode:none|attach|reuse`（默认 none；reuse 必须有 parent_id）。结果中的 `trace_context.reusable` 表示该轮是否仍可作为复用起点；`evidence.trace` 记录发送范围、哈希和本轮新增附件字节数。认证/Origin 校验与其余 API 相同。关联仍使用 `manual-batch/preview`、`manual-batch` 或 `manual-links`；额外传 `ai_run_id`、`ai_proposal_id` 时校验来源和版本，不新增绕过原校验的应用接口。
