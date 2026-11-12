@@ -61,7 +61,7 @@ onBeforeUnmount(()=>{disposed=true;sequence++;clearTimeout(timer);document.remov
       <button class="close" aria-label="关闭 AI 辅助" @click="emit('close')">×</button>
       <h2 id="ai-title">AI 辅助分析</h2>
       <p class="muted">{{ scope?.op_type ? `${scope.op_type} / ${scope.device_id} / ${scope.core_type}` : '全任务 · 耗时最高的前 6 个类型' }} · 结果 {{ job.attempt.slice(0,8) }}</p>
-      <p class="notice">AI 提供证据解释和关联建议。关联需人工预览确认，可在「补充关联」中撤销。关闭窗口后分析继续。</p>
+      <p class="notice">AI 提供证据解释和关联建议。关联需人工预览确认，可在「人工补充关联」中撤销。关闭窗口后分析继续。</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <template v-if="config">
         <label>分析后端<select v-model="provider" :disabled="loading||active"><option v-for="p in config.providers" :key="p.id" :value="p.id">{{ p.label }}{{ p.available?'':' · 未就绪' }}</option></select></label>

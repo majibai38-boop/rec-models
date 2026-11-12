@@ -125,8 +125,8 @@ onBeforeUnmount(() => {sequence++; batchSequence++; document.removeEventListener
 <template>
   <div class="drawer-backdrop" @click.self="!saving && $emit('close')">
     <section ref="dialog" class="drawer manual-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-title" tabindex="-1" :aria-busy="loading || saving">
-      <button class="close" aria-label="关闭补充关联" :disabled="saving" @click="$emit('close')">×</button>
-      <h2 id="manual-title">{{ type.op_type }} · 补充关联</h2>
+      <button class="close" aria-label="关闭人工补充关联" :disabled="saving" @click="$emit('close')">×</button>
+      <h2 id="manual-title">{{ type.op_type }} · 人工补充关联</h2>
       <p v-if="props.seed" class="notice">已带入 AI 推荐配对。请核对 shape、CPU 调用位置和工作量后，选择单组确认或批量预览；AI 推荐本身不是等价证明。</p>
       <p class="muted">{{ type.device_id }} / {{ type.core_type }} · 当前可比时间覆盖率 {{ fmt(type.coverage.comparable.time_pct) }}%</p>
       <p class="notice">只关联尚未分配的 GPU 计算 kernel，按整组比较；不修改真实 CPU owner，不逐个分摊时间。人工确认不等于自动验证。</p>
