@@ -1,10 +1,14 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 const props = defineProps({job:Object, scope:Object, api:Function})
-const emit = defineEmits(['close','associate'])
+const emit = defineEmits(['scope','associate'])
 const dialog=ref(null), config=ref(null), provider=ref(''), question=ref('分析当前范围的性能与覆盖率缺口，引用具体证据，并推荐值得人工核对的 GPU 关联候选。')
+const mode=ref('auto'), exclusions=ref(''), followup=ref(false)
+const templates=[['overall','整体性能诊断','分析整体性能差距、主要热点和优化优先级，区分可比与未可比部分。'],['coverage','覆盖率排查','分析不可比耗时最大的类型，给出缺失证据和排查顺序。'],['shape','Shape / dtype','分析 shape 和 dtype 与性能差异的关系，列出具体样本和局限。'],['mapping','关联建议','核对 CPU 调用结构和工作量，推荐值得人工确认的关联候选。']]
+function newConversation(){followup.value=false;run.value=null;clearTimeout(timer);sequence++;question.value=''}
 const consent=ref(false), loading=ref(false), error=ref(''), run=ref(null), history=ref([]), deleting=ref(false), evidenceId=ref('')
 const active=computed(()=>['queued','running'].includes(run.value?.status))
+const totals=computed(()=>run.value?.evidence?.items.find(e=>e.kind==='scope_totals')?.data)
 const stale=computed(()=>run.value?.stale || run.value?.attempt!==props.job.attempt || props.job.status!=='succeeded')
 const selectedProvider=computed(()=>config.value?.providers.find(p=>p.id===provider.value))
 const status={queued:'等待 AI 分析',running:'正在分析证据',succeeded:'分析完成',failed:'分析失败',cancelled:'已取消',interrupted:'已中断'}
@@ -17,17 +21,18 @@ async function select(id) {
   const seq=++sequence;clearTimeout(timer);deleting.value=false;evidenceId.value=''
   const next=await props.api(`${url()}/${id}`)
   if(disposed || seq!==sequence)return
-  run.value=next
+  run.value=next;followup.value=next.status==='succeeded'&&!next.stale
   if(['queued','running'].includes(next.status))timer=setTimeout(()=>poll(id,seq),1500)
 }
 async function poll(id,seq){
-  try{const next=await props.api(`${url()}/${id}`);if(disposed||seq!==sequence)return;run.value=next
+  try{const next=await props.api(`${url()}/${id}`);if(disposed||seq!==sequence)return;run.value=next;followup.value=next.status==='succeeded'&&!next.stale
     if(['queued','running'].includes(next.status))timer=setTimeout(()=>poll(id,seq),1500)
     else await refreshHistory()
   }catch(e){if(!disposed&&seq===sequence)error.value=e.message}
 }
 async function start(){await action(async()=>{
   const created=await props.api(url(),'POST',{attempt:props.job.attempt,provider:provider.value,question:question.value.trim(),
+    parent_id:followup.value&&!stale.value?run.value?.id:null,mode:mode.value,exclude_types:exclusions.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),
     scope:props.scope?.op_type?{op_type:props.scope.op_type,device_id:props.scope.device_id,core_type:props.scope.core_type}:null,share_evidence:consent.value})
   await refreshHistory();await select(created.id)
 })}
@@ -40,44 +45,43 @@ function associate(proposal){
 }
 async function showEvidence(id){evidenceId.value=id;await nextTick();dialog.value.querySelector('[data-ai-evidence]')?.scrollIntoView({block:'nearest'})}
 function download(){const blob=new Blob([JSON.stringify(run.value,null,2)],{type:'application/json'});const link=document.createElement('a');const url=URL.createObjectURL(blob);link.href=url;link.download='ai-analysis-'+run.value.id+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-function key(e){
-  if(e.key==='Escape'){e.preventDefault();emit('close')}
-  if(e.key!=='Tab')return
-  const elements=[...dialog.value.querySelectorAll('button,input,select,textarea,summary')].filter(x=>!x.disabled&&x.getClientRects().length)
-  if(e.shiftKey&&document.activeElement===elements[0]){e.preventDefault();elements.at(-1)?.focus()}
-  else if(!e.shiftKey&&document.activeElement===elements.at(-1)){e.preventDefault();elements[0]?.focus()}
-}
-onMounted(async()=>{previousFocus=document.activeElement;dialog.value.focus();document.addEventListener('keydown',key);await action(async()=>{
+onMounted(async()=>{previousFocus=document.activeElement;dialog.value.focus();await action(async()=>{
   const [cfg,runs]=await Promise.all([props.api('/ai/config'),props.api(url())]);if(disposed)return
   config.value=cfg;history.value=runs;provider.value=cfg.providers.find(p=>p.available)?.id||cfg.providers[0]?.id||''
   if(runs.length)await select(runs[0].id)
 })})
-onBeforeUnmount(()=>{disposed=true;sequence++;clearTimeout(timer);document.removeEventListener('keydown',key);previousFocus?.focus()})
+onBeforeUnmount(()=>{disposed=true;sequence++;clearTimeout(timer);previousFocus?.focus()})
 </script>
 
 <template>
-  <div class="drawer-backdrop" @click.self="emit('close')">
-    <section ref="dialog" class="drawer ai-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-title" tabindex="-1">
-      <button class="close" aria-label="关闭 AI 辅助" @click="emit('close')">×</button>
+  <div class="ai-workspace">
+    <section ref="dialog" class="ai-dialog" aria-labelledby="ai-title" tabindex="-1">
+      <div class="toolbar"><button :disabled="active" @click="newConversation">新建会话</button><button v-if="scope?.op_type" :disabled="active" @click="emit('scope',{})">切换到全任务</button></div>
       <h2 id="ai-title">AI 辅助分析</h2>
-      <p class="muted">{{ scope?.op_type ? `${scope.op_type} / ${scope.device_id} / ${scope.core_type}` : '全任务 · 耗时最高的前 6 个类型' }} · 结果 {{ job.attempt.slice(0,8) }}</p>
-      <p class="notice">AI 提供证据解释和关联建议。关联需人工预览确认，可在「人工补充关联」中撤销。关闭窗口后分析继续。</p>
+      <p class="muted small">GPU Step {{ job.options?.all_steps?'全量':job.options?.gpu_step }} · NPU Step {{ job.options?.all_steps?'全量':job.options?.npu_step }} · 同一结果版本内追问，版本变化后需新建会话。</p>
+      <p class="muted">{{ scope?.op_type ? `${scope.op_type} / ${scope.device_id} / ${scope.core_type}` : '全任务 · 完整统计 + 按问题选择明细' }} · 结果 {{ job.attempt.slice(0,8) }}</p>
+      <p class="notice">AI 提供证据解释和关联建议。关联需人工预览确认，可在「人工补充关联」中撤销。切换页签后分析继续，历史可恢复查看。</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <div class="toolbar"><button v-for="t in templates" :key="t[0]" :disabled="active" @click="mode=t[0];question=t[2]">{{ t[1] }}</button></div>
       <template v-if="config">
         <label>分析后端<select v-model="provider" :disabled="loading||active"><option v-for="p in config.providers" :key="p.id" :value="p.id">{{ p.label }}{{ p.available?'':' · 未就绪' }}</option></select></label>
         <p v-if="!selectedProvider?.available" class="notice">{{ selectedProvider?.reason }}。配置方式见部署文档「AI 辅助分析」。</p>
         <p class="muted small">{{ selectedProvider?.model }} · 超时 {{ config.timeout_seconds }} 秒 · CLI 在服务器运行，客户端无需安装。</p>
+        <label>证据查询方式<select v-model="mode" :disabled="active"><option value="auto">按问题自动选择</option><option v-for="t in templates" :key="t[0]" :value="t[0]">{{ t[1] }}</option></select></label><label>排除的 NPU 类型（逗号分隔，精确名称）<input v-model="exclusions" :disabled="active" placeholder="例如 Cast, Slice" /></label><p class="muted small">完整汇总不受明细采样影响。排除后的差额是累计 kernel 时间变化，不是端到端收益。</p>
+        <label v-if="run?.status==='succeeded'&&!stale" class="check"><input type="checkbox" v-model="followup">继续当前会话（继承最近 4 轮，可调整分析范围）</label>
         <label>想分析的问题<textarea v-model="question" :disabled="loading||active" maxlength="2000" rows="3"/></label>
         <label class="check"><input type="checkbox" v-model="consent" :disabled="loading||active">允许将问题及当前范围的统计、算子名称、模块、shape/dtype、调用样本发送给所选模型服务。不发送完整 Trace。</label>
-        <button class="primary" :disabled="loading||active||!consent||!question.trim()||!selectedProvider?.available||job.status!=='succeeded'" @click="start">开始 AI 分析</button>
+        <button class="primary" :disabled="loading||active||!consent||!question.trim()||!selectedProvider?.available||job.status!=='succeeded'" @click="start">{{ followup&&!stale?'发送追问':'开始 AI 分析' }}</button>
       </template>
       <div v-if="history.length" class="ai-history"><label>分析历史<select :value="run?.id||''" :disabled="loading" @change="action(()=>select($event.target.value))"><option value="" disabled>选择分析</option><option v-for="r in history" :key="r.id" :value="r.id">{{ new Date(r.created*1000).toLocaleString() }} · {{ r.provider }} · {{ status[r.status] }}</option></select></label></div>
       <section v-if="run" class="ai-result" aria-live="polite">
+        <div v-if="totals" class="metrics"><article><span>范围内 NPU 累计时间</span><strong>{{ totals.before.npu_time_us }} μs</strong></article><article><span>不可比 NPU 累计时间</span><strong>{{ totals.before.uncomparable_npu_time_us }} μs</strong></article><article><span>排除后 NPU 累计时间</span><strong>{{ totals.after_exclusions.npu_time_us }} μs</strong></article></div>
         <div class="toolbar"><strong>{{ status[run.status] }} · {{ run.provider }}</strong><button v-if="active" :disabled="loading" @click="cancel">取消分析</button><button v-if="!active" @click="download">下载分析 JSON</button><button v-if="!active" @click="deleting=!deleting">删除此记录</button><button v-if="active&&error" @click="action(()=>select(run.id))">刷新状态</button></div>
         <div v-if="deleting" class="notice">仅删除这次 AI 分析记录，已确认的人工关联保留。<button :disabled="loading" @click="remove">确认删除记录</button></div>
         <p v-if="stale" class="notice">此分析属于旧结果或任务正在更新，可阅读历史，但不能应用其中的建议。</p>
         <p v-if="run.error" class="error">{{ run.error }}</p>
-        <details><summary>本次问题与范围</summary><p>{{ run.request.question }}</p><pre>{{ run.request.scope || '全任务 Top 6 类型' }}</pre></details>
+        <details><summary>本次问题与范围</summary><p>{{ run.request.question }}</p><pre>{{ run.request.scope || '全任务' }}</pre></details>
+        <details v-if="run.evidence?.conversation?.length"><summary>本轮继承的对话 · {{ run.evidence.conversation.length }} 轮</summary><article v-for="(turn,i) in run.evidence.conversation" :key="i" class="ai-card"><strong>{{ turn.question }}</strong><p>{{ turn.answer }}</p></article></details>
         <template v-if="run.result">
           <p class="ai-summary">{{ run.result.summary }}</p>
           <article v-for="(f,i) in run.result.findings" :key="i" class="ai-card"><h3>{{ f.title }}</h3><p>{{ f.detail }}</p><button v-for="id in f.evidence_ids" :key="id" class="type-link" @click="showEvidence(id)">{{ id }} ↗</button></article>
@@ -93,7 +97,7 @@ onBeforeUnmount(()=>{disposed=true;sequence++;clearTimeout(timer);document.remov
 </template>
 
 <style scoped>
-.ai-dialog{width:min(900px,96vw)}
+.ai-dialog{width:100%;outline:none}.ai-workspace{max-width:1200px;margin:auto}.ai-result{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.ai-workspace input:not([type=checkbox]){width:100%;padding:8px}.ai-workspace .toolbar{flex-wrap:wrap}
 select,textarea{width:100%;margin:6px 0 12px}
 .ai-dialog p,.ai-dialog li{white-space:pre-wrap;overflow-wrap:anywhere}
 .ai-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;background:#f4f7f8;padding:12px}

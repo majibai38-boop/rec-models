@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import secrets
 import shutil
+import sqlite3
 import time
 import uuid
 from typing import Literal
@@ -227,6 +228,14 @@ def create_app(settings=None):
     async def missing(request, exc):
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
 
+    @app.exception_handler(PermissionError)
+    async def storage_denied(request, exc):
+        return JSONResponse({'detail': '服务账户无权访问任务数据目录，请检查目录权限或使用可写的数据目录。'}, status_code=503)
+
+    @app.exception_handler(sqlite3.OperationalError)
+    async def database_unavailable(request, exc):
+        return JSONResponse({'detail': '任务数据库或结果索引暂不可读取，请检查数据目录访问权限、文件完整性及数据库占用情况。'}, status_code=503)
+
     @app.exception_handler(Conflict)
     async def conflict(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=409)
@@ -413,7 +422,10 @@ def create_app(settings=None):
         job = store.get(job_id)
         if job["status"] != "succeeded" or not job["summary"]:
             raise HTTPException(409, "结果尚未通过校验或任务未完成")
-        return job, store.path(job_id) / "attempts" / job["attempt"]
+        root = store.path(job_id) / "attempts" / job["attempt"]
+        if not (root / 'index.sqlite').is_file():
+            raise HTTPException(409, '任务记录存在，但结果索引缺失或无法访问。请检查数据目录权限与完整性；输入文件可用时可复用输入重新分析。')
+        return job, root
 
     @app.get('/api/jobs/{job_id}/manual-options')
     def manual_candidates(job_id: str, op_type: str = Query(...,max_length=200),

@@ -27,6 +27,9 @@ class Request(StrictModel):
     question: str = Field(min_length=1, max_length=2000)
     scope: Scope | None = None
     share_evidence: bool = False
+    parent_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    mode: Literal['auto','overall','coverage','shape','mapping'] = 'auto'
+    exclude_types: list[str] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode='after')
     def check(self):
@@ -34,6 +37,8 @@ class Request(StrictModel):
             raise ValueError('请填写分析问题')
         if not self.share_evidence:
             raise ValueError('请确认将所选范围的统计、元数据和问题发送给模型服务')
+        if any(not t.strip() or len(t)>200 for t in self.exclude_types):
+            raise ValueError('排除类型必须为非空名称，且不超过 200 字符')
         return self
 
 
@@ -75,6 +80,10 @@ class AIService:
         return job
 
     def create(self, job_id, body):
+        if body.parent_id:
+            parent = self.get(job_id, body.parent_id)
+            if parent['stale'] or parent['attempt'] != body.attempt or parent['status'] != 'succeeded':
+                raise Conflict('只能继续当前结果版本中成功完成的分析，请新建会话')
         provider = next(p for p in self.config.availability()['providers'] if p['id'] == body.provider)
         if not provider['available']:
             raise HTTPException(503, provider['reason'])
@@ -119,6 +128,20 @@ class AIService:
             result[field] = json.loads(result[field]) if result[field] else None
         result['stale'] = result['attempt'] != job['attempt'] or job['status'] != 'succeeded'
         return result
+
+    def conversation(self, job_id, parent_id, attempt):
+        turns = []
+        while parent_id and len(turns)<4:
+            try:
+                parent = self.get(job_id, parent_id)
+            except HTTPException:
+                break
+            if parent['attempt'] != attempt or parent['status'] != 'succeeded':
+                break
+            turns.append({'question':parent['request']['question'], 'scope':parent['request'].get('scope'),
+                          'answer':parent['result']['summary'], 'findings':parent['result']['findings'][:4]})
+            parent_id = parent['request'].get('parent_id')
+        return list(reversed(turns))
 
     def cancel(self, job_id, ident):
         self.get(job_id, ident)
@@ -172,7 +195,10 @@ class AIService:
                 job = self.current(row['job_id'], row['attempt'])
                 self._update(ident, status='running')
                 root = self.store.path(job['id'])/'attempts'/job['attempt']
-                evidence = build_evidence(job, root/'index.sqlite', body.scope.model_dump() if body.scope else {})
+                evidence = build_evidence(job, root/'index.sqlite', body.scope.model_dump() if body.scope else {},
+                                          body.question, body.mode, body.exclude_types)
+                evidence['conversation'] = self.conversation(job['id'], body.parent_id, job['attempt'])
+                evidence['conversation_limit'] = '最多继承最近 4 轮；旧回答为待核实上下文，引用需以当前证据为准'
                 self._update(ident, evidence=json.dumps(evidence, ensure_ascii=False))
                 scratch = self.store.path(job['id'])/'ai-scratch'
                 scratch.mkdir(exist_ok=True, mode=0o700)

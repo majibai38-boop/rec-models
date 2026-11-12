@@ -1,5 +1,5 @@
 // Versioned, bounded display state only. Never contains tokens or file paths.
-export const tabKeys = ['overview', 'operator', 'whole', 'coverage', 'calls', 'distribution']
+export const tabKeys = ['overview', 'operator', 'whole', 'coverage', 'calls', 'distribution', 'ai']
 export function normalizeStep(value) { return String(value || '').trim().replace(/^ProfilerStep#([0-9]+)$/i, '$1') }
 const text = value => typeof value === 'string' ? value.slice(0, 200) : ''
 const page = value => Number.isInteger(value) && value >= 0 ? Math.min(value, 100000) : 0
@@ -13,6 +13,7 @@ export function cleanView(value = {}) {
     recordKind: pick(value.recordKind, ['reasons', 'mappings', 'diagnoses'], 'reasons'),
     callSearch: text(value.callSearch), callSort: pick(value.callSort, ['npu_time', 'ratio', 'name'], 'npu_time'),
     callStatus: pick(value.callStatus, ['', 'comparable', 'pending'], ''),
+    aiScope: fields(value.aiScope, ['op_type', 'device_id', 'core_type']),
     scope: fields(value.scope, ['op_type', 'device_id', 'core_type']),
     callFilter: fields(value.callFilter, ['related_type', 'group_id', 'device_id', 'core_type']),
     operator: {search:text(value.operator?.search),sort:pick(value.operator?.sort,['npu_time','ratio'],'npu_time'),

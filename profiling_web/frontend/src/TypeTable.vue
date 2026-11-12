@@ -17,7 +17,7 @@ const ratioHint = (r, comparable) => comparable
         <small>{{ r.device_id }} / {{ r.core_type }}</small>
         <small v-if="detailed && (r.fused_npu_type !== r.op_type || r.fused_gpu_type !== r.op_type)">{{ r.fused_npu_type }} ↔ {{ r.fused_gpu_type }}</small>
         <div v-if="r.row_kind==='npu_type'" class="type-actions">
-          <button class="type-link" @click="$emit('detail',r)">详细对比 →</button>
+          <button class="type-link" @click="$emit('detail',r)">详细信息跳转 →</button>
           <button class="type-link" @click="$emit('ai',r)">AI 分析</button>
           <button v-if="r.coverage.comparable.time_pct < 100 || r.manual_count" class="type-link" @click="$emit('manual',r)">人工补充关联<span v-if="r.manual_count"> ×{{ r.manual_count }}</span></button>
         </div>

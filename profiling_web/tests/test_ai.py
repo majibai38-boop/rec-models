@@ -131,6 +131,26 @@ class AIWebTest(unittest.TestCase):
         self.assertEqual(self.client.get(f'/api/jobs/{other}/ai-runs/{rid}').status_code,404)
         self.assertEqual(self.client.delete(self.base+'/ai-runs/'+rid).status_code,200)
 
+    def test_followup_context_and_exact_exclusion_totals(self):
+        self.setup_job()
+        first=self.start_fake()
+        self.body['parent_id']=first['id']
+        self.body['question']='继续分析 shape 的影响'
+        second=self.start_fake()
+        self.assertEqual(second['status'],'succeeded',second)
+        self.assertEqual(second['evidence']['conversation'][0]['answer'],first['result']['summary'])
+        plan=next(e['data'] for e in second['evidence']['items'] if e['kind']=='query_plan')
+        self.assertEqual(plan['mode'],'shape')
+        index=self.store.path(self.ident)/'attempts'/self.job['attempt']/'index.sqlite'
+        evidence=build_evidence(self.job,index,{},exclude_types=['IndexAdd'])
+        totals=next(e['data'] for e in evidence['items'] if e['kind']=='scope_totals')
+        self.assertGreater(totals['before']['npu_time_us'],0)
+        self.assertEqual(totals['after_exclusions']['npu_time_us'],0)
+        other=self.new()
+        self.assertEqual(self.client.post(f'/api/jobs/{other}/ai-runs',json=self.body).status_code,404)
+        self.store.update(self.ident,attempt='f'*32)
+        self.assertEqual(self.client.post(self.base+'/ai-runs',json=self.body).status_code,409)
+
 
 class BackendTest(unittest.TestCase):
     def setUp(self):

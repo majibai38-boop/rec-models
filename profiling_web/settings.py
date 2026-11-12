@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import secrets
+import tempfile
 
 
 @dataclass
@@ -20,6 +21,18 @@ class Settings:
         self.data_dir = Path(self.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.data_dir / "jobs").mkdir(exist_ok=True, mode=0o700)
+        # An existing jobs directory may have a different Windows owner/ACL.
+        # mkdir(exist_ok=True) alone does not prove it is readable or writable.
+        try:
+            with os.scandir(self.data_dir / 'jobs') as entries:
+                next(entries, None)
+            with tempfile.TemporaryDirectory(prefix='.access-check-', dir=self.data_dir / 'jobs') as probe:
+                path = Path(probe) / 'probe'
+                path.write_bytes(b'profiling')
+                if path.read_bytes() != b'profiling':
+                    raise OSError('Storage read-back failed')
+        except OSError as exc:
+            raise ValueError(f'任务目录无法读写：{self.data_dir / "jobs"}。请使用拥有访问权限的账户运行，或指定可写的 --data-dir；原数据不会自动迁移。') from exc
         if min(self.max_upload_bytes, self.storage_bytes, self.memory_mb, self.timeout_seconds) <= 0:
             raise ValueError("Resource limits must be positive")
         if self.auth_mode not in {"local", "token", "none"}:
