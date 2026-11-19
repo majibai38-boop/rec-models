@@ -48,6 +48,18 @@ python -m profiling_tools query --result-dir new_result --side gpu --cpu-op-inde
 - `summary.overall_statistics` 和 `query.type_statistics` 提供有类型的数量、耗时、两个性能比及拆分覆盖率；`query.reason_groups` 提供原因聚合和下一步排查。后两项是完整 Device/Type/Core 的上下文，不是单个 kernel 查询后的子集小计。其余 CSV 来源记录保留原始列名/字符串，布尔值须显式解析。
 - 新的 `matches.csv` 含 GPU/NPU CPU op 索引。旧结果仍可做类型/kernel 查询和数值校验，但缺少这些索引时不能可靠地做 GPU CPU-index 查询。
 
+### 按类型出表与 Agent 调用关系分析
+
+对已有结果按类型生成 Excel 和 Markdown。类型表保留引擎初始的可比时间覆盖率，旁列经调用范围校验后的可比时间、比值和关联调用组。GPU 未映射行按新增归属扣减，TOTAL 仍包含全部设备活动。调用组页区分新增归属、仅整组可比和待确认的次数。默认按调用级证据自动处理，多个 NPU 类型共用的 GPU 时间仅在整组视图解释。
+
+```bash
+python -m profiling_tools call-evidence --result-dir new_result
+python -m profiling_tools call-evidence --result-dir new_result --op-type IndexAdd
+python -m profiling_tools tables --result-dir new_result --output-dir tables_report --caliber-note "GPU/NPU 均取 Step 15，FP32，单 rank"
+```
+
+按查询返回的 `--group-id`、`--call-id` 继续查看具体调用、shape 和事件。Agent 可提交提案文件，按调用或整组选择比较粒度。输出的 `call_tables.json` 可用作同一运行的 `--proposals` 参数以重放；`call_tables.xlsx` 和 `call_tables.md` 用于阅读。每次使用结果目录之外的新目录或空目录。命令、提案格式及证据要求见 [Skill 调用分析说明](../skills/gpu-npu-profiling/references/call-alignment-tables.md)。
+
 ### 运行记录与校验
 
 `summary.json` 增加 schema、运行 ID、工具/规则/源码版本、状态和警告。`run_manifest.json` 记录输入 SHA-256、大小/mtime、所有参数和生成物哈希；不复制原始 trace。`input_inspection.json` 保存预检查结果，`validation.json` 保存完成时校验。状态分为 `complete`、`complete_with_gaps`、`invalid`，低覆盖率不是执行失败。
@@ -61,9 +73,9 @@ NPU 总体目前仅包含 **kernel_details-backed kernel**，不包括 trace-onl
 仓库中的 skill 源码位于 `skills/gpu-npu-profiling`，薄入口调用唯一一份核心实现。构建时自动打包核心，不手工复制或维护第二套算法：
 
 ```bash
-python -m profiling_tools.build_bundle --output-dir dist/profiling-skill-0.2.0
-python /absolute/path/dist/profiling-skill-0.2.0/profiling_tools.pyz --version
-python /absolute/path/dist/profiling-skill-0.2.0/gpu-npu-profiling/scripts/run_compare.py summary --result-dir /absolute/path/results
+python -m profiling_tools.build_bundle --output-dir dist/profiling-skill-0.3.0
+python /absolute/path/dist/profiling-skill-0.3.0/profiling_tools.pyz --version
+python /absolute/path/dist/profiling-skill-0.3.0/gpu-npu-profiling/scripts/run_compare.py summary --result-dir /absolute/path/results
 ```
 
 构建目录必须不存在。产物包含独立 `.pyz`、可分发 skill 文件夹和 `bundle.json`，不会包含 example、测试、trace 或训练依赖。将构建后的 `gpu-npu-profiling` 文件夹放入自己的 skill 目录后，可用 `$gpu-npu-profiling` 发起请求。不要单独复制仓库内未打包的 skill 文件夹到其他机器：该源版本依赖相邻仓库；分发版本内置固定版本 zipapp。

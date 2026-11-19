@@ -12,6 +12,7 @@ Use the packaged Python engine for all parsing, mapping, accounting and determin
 - **New comparison:** User provides GPU trace, NPU trace and `kernel_details.csv`. Read [input-contract.md](references/input-contract.md), inspect inputs, resolve material scope ambiguity, then compare.
 - **Existing results:** Start with `summary` and `validate`. Do not reopen traces or rerun comparison unless needed and within the request.
 - **Specific operator/kernel investigation:** Start with `query` using exact type or scoped index. Read [investigation.md](references/investigation.md) when interpreting a gap. Read [metrics.md](references/metrics.md) before comparing ratios or combining views.
+- **Type comparison or hard-to-align calls:** Deliver the type table first. Use [call-alignment-tables.md](references/call-alignment-tables.md) to investigate gaps by caller, submit run-local decisions and generate the type and call-group workbook. Use this mode for comparison deliverables after a new run as well.
 
 Resolve this skill's absolute path. Run its `scripts/run_compare.py` with a Python 3.9+ interpreter, from any working directory. It uses the pinned zipapp in a distributed bundle or the repository implementation when used in its source checkout. It never installs dependencies or downloads traces.
 

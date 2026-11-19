@@ -12,6 +12,12 @@ Excel 页签顺序为：类型对比、整体对比、覆盖率诊断、调用�
 - 不同 NPU/GPU 实现组合分组，跨组可能有父子调用重叠。组内同一事件不重复纳入比值，重叠调用 ID 在明细中可见。整体页没有直接求和的 TOTAL。
 - 通用完整调用要求唯一可信 CPU 匹配、兼容的完整输入元数据、可靠 kernel owner 和完整 NPU detail 范围才标为可比较。缺失 TensorList 元素 shape 记为“不完整”，不是实际冲突，也不是自动匹配通配符。已存在的 CPU bundle/FA 规则仍展示其原始匹配依据。
 
+## 批量 MatMul 反向
+
+NPU 的 `aten::matmul_backward` 与 GPU 的 `BmmBackward0` 在调用级比较。引擎核对两端梯度计算的 batch、M/K/N 和输入 dtype，优先复用 Trace 内前后向证据对应的已对齐前向调用，其次尝试在选中 Step 内按模块和完整梯度签名唯一定位。多个候选具有相同签名时保留覆盖率缺口。多 Step 采集须先选中要比较的 Step。
+
+整组耗时包含调用中能可靠归属的布局准备及 GPU 内存活动。仅能唯一配对的梯度 kernel 会计入 `BatchMatMulV3` 类型统计。调用明细保存 GPU autograd 边界在原始 Trace 中的事件索引。 `unmatched_gpu.csv` 仍列出 CPU 未配对的算子，新增三列区分其 kernel 已计入类型、仅计入整体或仍未归因。
+
 ## 导航与文件
 
 - `whole_call_statistic.csv`：按完整调用及两端实现组合聚合，包含可比/待核实调用数、两列比值、全量范围说明。

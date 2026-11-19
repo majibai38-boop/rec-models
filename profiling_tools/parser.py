@@ -83,6 +83,10 @@ CUSTOM_COMPARABLE_OPS = frozenset({
     "customop::triton_layernorm_forward",
 })
 
+_BMM_BACKWARD_SCOPE_NAMES = {
+    "bmmbackward0", "autograd::engine::evaluate_function: bmmbackward0",
+}
+
 
 _EXTRA_OPERATOR_NAMES_BY_SIDE = {
     # FlashAttentionFunc is a record_function/custom autograd op in CUDA
@@ -538,6 +542,10 @@ def _build_op_hierarchy_and_context(
                         deduplicated.append(name)
                 ops[index].module_path = " / ".join(deduplicated)
                 ops[index].module_key = normalize_module_key(ops[index].module_path)
+                step_names = {item[2].name for item in stack
+                              if item[0] == "context" and _is_step_event(item[2])}
+                if len(step_names) == 1:
+                    ops[index].step_name = step_names.pop()
             if event.duration_us > 0:
                 stack.append((kind, index, event))
 
@@ -1203,6 +1211,13 @@ def parse_trace(
         flow_link_diagnostics=flow_link_diagnostics,
         memory_activities=_gpu_memory_activities(events, ops, selected_pid, step_window)
         if side == "gpu" else [],
+        backward_scopes=[
+            event for event in events
+            if event.pid == selected_pid and event.name.strip().lower() in _BMM_BACKWARD_SCOPE_NAMES
+            and _is_complete_event(event) and event.duration_us > 0
+            and _event_in_window(event, step_window)
+            and (step_window is None or event.end_us <= step_window[1])
+        ] if side == "gpu" else [],
     )
 
 

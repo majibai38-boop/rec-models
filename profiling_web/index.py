@@ -27,7 +27,7 @@ def public_summary(reports):
 
 def downloadable(name):
     return (Path(name).name == name and "/" not in name and "\\" not in name
-            and name not in {"summary.json", "run_manifest.json", "input_inspection.json", "manual_catalog.json"}
+            and name not in {"summary.json", "run_manifest.json", "input_inspection.json", "manual_catalog.json", "call_candidates.json"}
             and Path(name).suffix in {".csv", ".xlsx", ".json", ".md"})
 
 

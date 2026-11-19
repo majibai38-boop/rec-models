@@ -90,7 +90,8 @@ that type rows are non-additive; the TOTAL row still counts that event once.
         for call in whole_call_rows:
             if "Comparable" in call and not _flag(call["Comparable"]):
                 continue
-            ref = {k: call[k] for k in ("CPU Bundle ID", "CPU Bundle", "Precision Path ID", "Fused OP", "Occurrence") if k in call}
+            ref = {k: call[k] for k in ("CPU Bundle ID", "CPU Bundle", "Precision Path ID", "Fused OP",
+                                        "Occurrence", "Call ID", "Whole OP") if k in call}
             for i in _indices(call, field):
                 if i < 0 or i >= len(records):
                     raise ValueError(f"out-of-range whole-call GPU {kind} index")

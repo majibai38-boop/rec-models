@@ -41,7 +41,8 @@ def _profile(value):
     return ParsedProfile(**{**value,
         'ops': [OpRecord(**{**row, 'event': TraceEvent(**row['event'])}) for row in value['ops']],
         'kernels': [kernel(row) for row in value['kernels']],
-        'memory_activities': [kernel(row) for row in value['memory_activities']]})
+        'memory_activities': [kernel(row) for row in value['memory_activities']],
+        'backward_scopes': [TraceEvent(**row) for row in value.get('backward_scopes', [])]})
 
 
 def load_cache(directory, manifest):

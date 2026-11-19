@@ -95,7 +95,32 @@ def _result_command(command, argv):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    command = argv.pop(0) if argv and argv[0] in {"inspect", "compare", "summary", "query", "validate"} else "legacy"
+    command = argv.pop(0) if argv and argv[0] in {"inspect", "compare", "summary", "query", "validate", "call-evidence", "tables"} else "legacy"
+    if command in {"tables", "call-evidence"}:
+        from .call_tables import CallEvidence, InvalidResults, export_tables
+        parser = argparse.ArgumentParser(prog=f"python -m profiling_tools {command}")
+        parser.add_argument("--result-dir", required=True)
+        parser.add_argument("--json", action="store_true", help="Output is always JSON")
+        if command == "tables":
+            parser.add_argument("--output-dir", required=True)
+            parser.add_argument("--proposals", help="Run-local proposal JSON or a previous call_tables.json")
+            parser.add_argument("--caliber-note", default="", help="Precision, parallelism, rank and workload scope")
+        else:
+            for option in ("op-type", "device-id", "core-type", "group-id", "call-id"):
+                parser.add_argument("--" + option)
+            parser.add_argument("--unmapped-gpu", action="store_true")
+            parser.add_argument("--gpu-name", help="Exact name in the GPU remainder")
+            parser.add_argument("--offset", type=int, default=0)
+            parser.add_argument("--limit", type=int, default=20)
+        options = vars(parser.parse_args(argv))
+        directory = options.pop("result_dir")
+        options.pop("json")
+        try:
+            _print_json(export_tables(directory, **options) if command == "tables" else CallEvidence(directory).query(**options))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _print_json({"status": "error", "message": str(exc)})
+            return 4 if isinstance(exc, InvalidResults) else 2
+        return 0
     if command in {"summary", "query", "validate"}:
         return _result_command(command, argv)
     args = build_parser(inspection=command == "inspect").parse_args(argv)

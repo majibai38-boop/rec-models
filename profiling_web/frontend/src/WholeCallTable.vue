@@ -19,7 +19,9 @@ const ratioClass = v => v === '' || v == null ? '' : Number(v) >= 2 ? 'ratio-dar
       <td class="composition">{{ r['NPU Types'] }}<small>{{ r['GPU Composition'] }}</small></td>
       <td v-if="!details">{{ num(r['Comparable Call Count']) }} / {{ num(r['Pending Call Count']) }}
         <small>关联 {{ num(r['Observed Call Count']) }} · 组内重叠未重复计入 {{ num(r['Overlapping Call Count']) }}</small></td>
-      <td v-else>{{ r['CPU Alignment Status'] }}</td>
+      <td v-else>{{ r['CPU Alignment Status'] }}
+        <small v-if="r['GPU Scope Name']">{{ r['GPU Scope Name'] }} · Trace 事件 #{{ r['GPU Scope Trace Event Index'] }}</small>
+      </td>
       <td>{{ num(r[details ? 'NPU Total Time(us)' : 'Comparable NPU Time(us)']) }}<small>{{ num(r[details ? 'GPU Total Time(us)' : 'Comparable GPU Time(us)']) }}</small>
         <small v-if="details">GPU 内存 {{ num(r['GPU Memory Time(us)']) }} μs</small></td>
       <td><span :class="['ratio', ratioClass(r['Comparable Ratio(GPU/NPU)'])]">{{ num(r['Comparable Ratio(GPU/NPU)']) }}</span></td>

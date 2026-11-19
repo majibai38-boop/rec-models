@@ -5,6 +5,8 @@ import json
 
 from .call_metadata import compare_match_metadata
 from .device_compare import encoded, scoped_indices
+from .matmul_backward import BACKWARD_OP, BACKWARD_SOURCE
+from .parser import get_arg
 
 
 REPORT_ONLY_OPS = {"aten::div", "aten::true_divide", "aten::sub", "aten::sub_", "aten::div_"}
@@ -29,7 +31,7 @@ def gpu_label(name):
     return name.split("<", 1)[0].removeprefix("void ")
 
 
-def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_map=None):
+def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_map=None, *, backward_calls=()):
     """Reuse existing trusted bundles and expose bounded candidate CPU scopes.
 
     Missing metadata stays pending. Existing types/coverage are not promoted.
@@ -39,10 +41,11 @@ def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_
     gscope, mscope, nscope = scoped_indices(gpu), scoped_indices(gpu, True), scoped_indices(npu)
     noncomparable = {int(r["NPU Kernel Index"]) for r in mapping_rows if not r["Comparable"]}
     by_npu, by_gpu = Counter(m.npu_op_index for m in matches), Counter(m.gpu_op_index for m in matches)
+    type_comparable = {int(r["NPU Kernel Index"]) for r in mapping_rows if r["Comparable"] and backward_calls}
     result, signatures = [], set()
 
     def append(call_id, name, nk, gk, gm, ni="", gi="", *, source, basis, cpu_status,
-               comparable, issues="", population_complete=False):
+               comparable, issues="", population_complete=False, gpu_scope=None):
         nk, gk, gm = sorted(set(nk)), sorted(set(gk)), sorted(set(gm))
         if not nk or not (gk or gm):
             return
@@ -59,10 +62,22 @@ def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_
                              + [gpu.memory_activities[i].event.name for i in gm])
         group_key = [name, device, ntypes, gtypes]
         group_id = "group:" + hashlib.sha256(encoded(group_key).encode()).hexdigest()[:16]
+        kernel_status = "完整调用可比较，未独立归因" if comparable else "待核实整体比较"
+        if gpu_scope and comparable:
+            covered = len(type_comparable.intersection(nk))
+            if covered:
+                kernel_status = f"完整调用可比较，{covered}/{len(nk)} 个 NPU kernel 已计入类型对比"
         result.append({
             "Call ID": call_id, "Group ID": group_id, "Whole OP": name,
             "Device_id": device, "NPU Types": ntypes, "GPU Composition": gtypes,
             "NPU CPU OP Index": ni, "GPU CPU OP Index": gi,
+            "NPU Step": npu.ops[ni].step_name if isinstance(ni, int) else "",
+            "GPU Step": gpu.ops[gi].step_name if isinstance(gi, int) else "",
+            "GPU Device Count": len({(k.event.pid, str(get_arg(k.event.args, "device", "Device ID", "device_id")))
+                                     for records, indices in ((gpu.kernels, gk), (gpu.memory_activities, gm))
+                                     for i in indices for k in (records[i],)}),
+            "GPU Scope Trace Event Index": gpu_scope.index if gpu_scope else "",
+            "GPU Scope Name": gpu_scope.name if gpu_scope else "",
             "NPU Kernel Indices": encoded(nk), "GPU Kernel Indices": encoded(gk),
             "GPU Memory Activity Indices": encoded(gm),
             "NPU Kernel Names": encoded(npu.kernels[i].event.name for i in nk),
@@ -74,7 +89,7 @@ def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_
             "Comparable": comparable, "Comparable Ratio(GPU/NPU)": round((gtime + mtime) / ntime, 6)
             if comparable and ntime else "",
             "CPU Alignment Status": cpu_status,
-            "Kernel Comparison Status": "完整调用可比较，未独立归因" if comparable else "待核实整体比较",
+            "Kernel Comparison Status": kernel_status,
             "Issues": issues, "Alignment Basis": basis, "Source": source,
             "Population Complete": population_complete, "Overlap Call IDs": "[]", "Scope": SCOPE,
         })
@@ -89,6 +104,11 @@ def build_whole_calls(gpu, npu, matches, mapping_rows, cpu_rows, fused_rows, op_
         append("fa:" + str(row["Occurrence"]), row["Fused OP"], ids(row, "NPU Kernel Indices"),
                ids(row, "GPU Kernel Indices"), [], gi=row["GPU OP Index"], source="fused_op_mapping.csv",
                basis=row["Alignment Basis"], cpu_status="融合规则关联（非直接 CPU 配对）", comparable=True)
+
+    for call in backward_calls:
+        append(call.call_id, BACKWARD_OP, call.npu.kernels, call.gpu.kernels, call.gpu.memory,
+               ni=call.npu.op_index, source=BACKWARD_SOURCE, basis=call.basis, gpu_scope=call.gpu.event,
+               cpu_status="反向调用范围已对齐", comparable=True)
 
     for match in matches:
         ni, gi = match.npu_op_index, match.gpu_op_index

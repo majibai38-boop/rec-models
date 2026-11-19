@@ -18,6 +18,7 @@ from .device_compare import (
 )
 from .precision_analysis import build_precision_rows
 from .whole_calls import build_whole_calls, summarize_whole_calls, annotate_type_calls
+from .matmul_backward import BACKWARD_SOURCE, recover_backward_calls, type_units
 from .comparison_accounting import add_coverage_conclusions, complete_gpu_accounting
 from .coverage_diagnostics import (
     build_coverage_diagnostics, write_coverage_diagnostics, validate_threshold,
@@ -249,6 +250,8 @@ def build_match_rows(
             "Match ID": match.match_id,
             "GPU OP Index": match.gpu_op_index,
             "NPU OP Index": match.npu_op_index,
+            "GPU Step": gpu_op.step_name,
+            "NPU Step": npu_op.step_name,
             "Confidence": match.confidence,
             "Match Score": _round(match.score),
             "Alignment Basis": match.alignment_basis,
@@ -500,7 +503,7 @@ def _op_depth(ops: Sequence[OpRecord], op_index: int) -> int:
 
 
 def build_npu_kernel_gpu_mapping_rows(
-    gpu: ParsedProfile, npu: ParsedProfile, matches: Sequence[OpMatch]
+    gpu: ParsedProfile, npu: ParsedProfile, matches: Sequence[OpMatch], *, backward_calls=()
 ) -> List[Dict[str, Any]]:
     """Map from each NPU kernel through its CPU op to zero or more GPU kernels."""
     match_by_npu_op = {match.npu_op_index: match for match in matches}
@@ -864,6 +867,19 @@ def build_npu_kernel_gpu_mapping_rows(
                 direct_gpu_op_by_npu_kernel[auxiliary_index] = gpu_op_index
             used_gpu_kernel_indices.update(gpu_kernel_indices)
 
+    backward_assignments = {}
+    for call in backward_calls:
+        for ni, gi in type_units(call):
+            _, mode, assigned = assignments.get(ni, (None, "", []))
+            if assigned or gi in used_gpu_kernel_indices or mode in {"api_helper_unmapped", "api_semantic_conflict_unmapped"}:
+                continue
+            detail = npu.kernels[ni].detail
+            if not detail.core_type or not detail.device_id:
+                continue
+            assignments[ni] = (None, "matmul_backward_gradient_pair", [gi])
+            backward_assignments[ni] = call
+            used_gpu_kernel_indices.add(gi)
+
     rows: List[Dict[str, Any]] = []
     for kernel_index, npu_kernel in enumerate(npu.kernels):
         # Match the scope of kernel_details.csv/op_statistic.csv. Trace-only
@@ -880,6 +896,19 @@ def build_npu_kernel_gpu_mapping_rows(
             else None
         )
         direct_gpu_op_index = direct_gpu_op_by_npu_kernel.get(kernel_index)
+        backward = backward_assignments.get(kernel_index)
+        match_id = match.match_id if match else ""
+        confidence = match.confidence if match else ""
+        alignment_basis = match.alignment_basis if match else ""
+        if backward is not None:
+            direct_gpu_op_index = gpu.kernels[gpu_kernel_indices[0]].owner_op_index
+            match_id = backward.call_id
+            alignment_basis = backward.basis
+            confidence = "high" if alignment_basis == "matmul_backward_forward_anchor" else "medium"
+        elif direct_gpu_op_index is not None:
+            match_id = f"gpu-custom:{direct_gpu_op_index}"
+            confidence = "high"
+            alignment_basis = "explicit_fused_type_equal_count_order"
         gpu_op = (
             gpu.ops[match.gpu_op_index]
             if match is not None
@@ -921,27 +950,9 @@ def build_npu_kernel_gpu_mapping_rows(
                 "API Expected CPU OPs": _json_list(sorted(kernel_api_expected_ops(npu_kernel))),
                 "API Semantic Conflict": mode == "api_semantic_conflict_unmapped",
                 "API Helper Kernel": mode == "api_helper_unmapped",
-                "CPU Match ID": (
-                    match.match_id
-                    if match is not None
-                    else f"gpu-custom:{direct_gpu_op_index}"
-                    if direct_gpu_op_index is not None
-                    else ""
-                ),
-                "CPU Match Confidence": (
-                    match.confidence
-                    if match is not None
-                    else "high"
-                    if direct_gpu_op_index is not None
-                    else ""
-                ),
-                "CPU Alignment Basis": (
-                    match.alignment_basis
-                    if match is not None
-                    else "explicit_fused_type_equal_count_order"
-                    if direct_gpu_op_index is not None
-                    else ""
-                ),
+                "CPU Match ID": match_id,
+                "CPU Match Confidence": confidence,
+                "CPU Alignment Basis": alignment_basis,
                 "GPU OP Name": gpu_op.event.name if gpu_op is not None else "",
                 "Mapping Mode": mode,
                 "Mapped": comparable,
@@ -950,7 +961,9 @@ def build_npu_kernel_gpu_mapping_rows(
                 "Comparable": comparable,
                 "Accounted": accounted,
                 "GPU Kernel Source": (
-                    "logical_cpu_scope"
+                    BACKWARD_SOURCE
+                    if backward is not None
+                    else "logical_cpu_scope"
                     if mode.startswith("logical_scope_")
                     else
                     "descendant_op"
@@ -1681,6 +1694,7 @@ def build_kernel_inventory_rows(profile: ParsedProfile) -> List[Dict[str, Any]]:
 
 def build_kernel_link_rows(profile: ParsedProfile) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    paths = {}
     for index, kernel in enumerate(profile.kernels):
         owner = (
             profile.ops[kernel.owner_op_index]
@@ -1692,6 +1706,12 @@ def build_kernel_link_rows(profile: ParsedProfile) -> List[Dict[str, Any]]:
             if kernel.original_owner_op_index is not None
             else None
         )
+        if owner is not None and kernel.owner_op_index not in paths:
+            path, ancestor = [], kernel.owner_op_index
+            while ancestor is not None:
+                path.append(profile.ops[ancestor].canonical_name)
+                ancestor = profile.ops[ancestor].parent_index
+            paths[kernel.owner_op_index] = _json_list(reversed(path))
         rows.append(
             {
                 "Side": profile.side,
@@ -1704,6 +1724,7 @@ def build_kernel_link_rows(profile: ParsedProfile) -> List[Dict[str, Any]]:
                 "Task Type": str(kernel.event.args.get("Task Type", "") or ""),
                 "Owner OP Index": kernel.owner_op_index if owner is not None else "",
                 "Owner OP Name": owner.event.name if owner is not None else "",
+                "Owner OP Path": paths.get(kernel.owner_op_index, ""),
                 "Link Method": kernel.link_method,
                 "Link Scope": kernel.link_scope,
                 "Link Distance(us)": _round(kernel.link_distance_us)
@@ -1729,7 +1750,7 @@ def build_kernel_link_rows(profile: ParsedProfile) -> List[Dict[str, Any]]:
     return rows
 
 
-def build_unmatched_rows(profile: ParsedProfile, indices: Sequence[int]) -> List[Dict[str, Any]]:
+def build_unmatched_rows(profile: ParsedProfile, indices: Sequence[int], *, gpu_remainder=None) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for index in indices:
         op = profile.ops[index]
@@ -1751,6 +1772,13 @@ def build_unmatched_rows(profile: ParsedProfile, indices: Sequence[int]) -> List
                 "Kernel Names": _json_list(kernel.event.name for kernel in kernels),
             }
         )
+        if gpu_remainder is not None:
+            statuses = Counter(gpu_remainder.get(i, "type_assigned") for i in op.kernel_indices)
+            rows[-1].update({
+                "GPU Type Assigned Kernel Count": statuses["type_assigned"],
+                "GPU Whole Call Only Kernel Count": statuses["whole_call_only"],
+                "GPU Unattributed Kernel Count": metrics.kernel_count - statuses["type_assigned"] - statuses["whole_call_only"],
+            })
     return rows
 
 
@@ -1803,7 +1831,8 @@ def write_reports(
 
     match_rows = build_match_rows(gpu, npu, matches)
     mapping_rows = build_gpu_kernel_mapping_rows(gpu, npu, matches)
-    npu_kernel_mapping_rows = build_npu_kernel_gpu_mapping_rows(gpu, npu, matches)
+    backward_calls = recover_backward_calls(gpu, npu, matches)
+    npu_kernel_mapping_rows = build_npu_kernel_gpu_mapping_rows(gpu, npu, matches, backward_calls=backward_calls)
     if manual_enabled or manual_links:
         from .manual_mapping import apply_links
         apply_links(gpu, npu, npu_kernel_mapping_rows, manual_links)
@@ -1826,7 +1855,7 @@ def write_reports(
         cpu_bundle_rows=cpu_bundle_rows, fused_rows=fused_op_mapping_rows, op_map=op_map,
     )
     whole_call_rows = build_whole_calls(gpu, npu, matches, npu_kernel_mapping_rows,
-                                      cpu_bundle_rows, fused_op_mapping_rows, op_map)
+                                      cpu_bundle_rows, fused_op_mapping_rows, op_map, backward_calls=backward_calls)
     whole_statistic_rows = summarize_whole_calls(whole_call_rows, gpu, npu)
     annotate_type_calls(npu_gpu_statistic_rows, npu_kernel_mapping_rows, whole_call_rows,
                         precision_rows, coverage_diagnostics)
@@ -1840,7 +1869,8 @@ def write_reports(
             row['排查结论'] = f'人工确认 {len(ids)} 组（非自动验证）；' + row.get('排查结论', '')
     npu_gpu_statistic_rows, gpu_unmapped_rows, gpu_accounting = complete_gpu_accounting(
         gpu, npu_kernel_mapping_rows, npu_gpu_statistic_rows,
-        whole_call_rows=[*precision_rows, *cpu_bundle_rows, *fused_op_mapping_rows],
+        whole_call_rows=[*precision_rows, *cpu_bundle_rows, *fused_op_mapping_rows,
+                         *(r for r in whole_call_rows if r["Source"] == BACKWARD_SOURCE)],
     )
     coverage_diagnostics["gpu_accounting"] = gpu_accounting
     coverage_diagnostics["gpu_unmapped_activities"] = gpu_unmapped_rows
@@ -1851,7 +1881,9 @@ def write_reports(
     region_rows = build_region_match_rows(gpu, npu, matches)
     kernel_inventory_rows = build_kernel_inventory_rows(gpu) + build_kernel_inventory_rows(npu)
     kernel_link_rows = build_kernel_link_rows(gpu) + build_kernel_link_rows(npu)
-    unmatched_gpu_rows = build_unmatched_rows(gpu, unmatched_gpu)
+    gpu_remainder = {row["GPU Activity Index"]: row["Status"] for row in gpu_unmapped_rows
+                     if row["GPU Activity Kind"] == "kernel"}
+    unmatched_gpu_rows = build_unmatched_rows(gpu, unmatched_gpu, gpu_remainder=gpu_remainder)
     unmatched_npu_rows = build_unmatched_rows(npu, unmatched_npu)
 
     reports = {
@@ -1912,7 +1944,8 @@ def write_reports(
             "region_matches.csv": ["Region ID", "Region Type"],
             "kernel_inventory_statistic.csv": ["Side", "Kernel Type", "Count"],
             "kernel_link_diagnostic.csv": ["Side", "Kernel Index", "Kernel Name"],
-            "unmatched_gpu.csv": ["OP Index", "OP Name"],
+            "unmatched_gpu.csv": ["OP Index", "OP Name", "GPU Type Assigned Kernel Count",
+                                  "GPU Whole Call Only Kernel Count", "GPU Unattributed Kernel Count"],
             "unmatched_npu.csv": ["OP Index", "OP Name"],
             "gpu_memory_activity.csv": ["GPU Memory Activity Index", "Activity Kind", "Name"],
             "cpu_bundle_mapping.csv": ["CPU Bundle ID", "CPU Bundle"],
@@ -2034,12 +2067,14 @@ def write_reports(
                 ("Call ID", "Whole OP", "NPU Types", "GPU Composition", "CPU Alignment Status",
                  "Kernel Comparison Status", "NPU Total Time(us)", "GPU Kernel Time(us)", "GPU Memory Time(us)",
                  "GPU Total Time(us)", "Comparable Ratio(GPU/NPU)", "Issues", "Overlap Call IDs",
-                 "NPU CPU OP Index", "GPU CPU OP Index", "NPU Kernel Indices", "GPU Kernel Indices",
+                 "NPU CPU OP Index", "GPU CPU OP Index", "GPU Scope Trace Event Index", "GPU Scope Name",
+                 "NPU Kernel Indices", "GPU Kernel Indices",
                  "GPU Memory Activity Indices", "NPU Kernel Names", "GPU Kernel Names", "GPU Memory Activity Names",
                  "Alignment Basis", "Source", "Scope", "Group ID"), rows=whole_call_rows,
                 freeze_columns=2, links=detail_links,
                 wrap_columns=("NPU Types", "GPU Composition", "Issues", "Scope"),
-                hidden_columns=("NPU Kernel Names", "GPU Kernel Names", "GPU Memory Activity Names", "Group ID"),
+                hidden_columns=("NPU Kernel Names", "GPU Kernel Names", "GPU Memory Activity Names", "Group ID",
+                                "GPU Scope Trace Event Index", "GPU Scope Name"),
             ),
             TableSheet(
                 "耗时分布",
@@ -2301,6 +2336,10 @@ def write_reports(
     summary['pipeline_analysis'] = pipeline_report['summary']
     write_json(output / 'operator_details.json', build_operator_details(gpu, npu, matches, npu_kernel_mapping_rows))
     summary['reports'].append('operator_details.json')
+    from .call_candidates import child_candidates
+    write_json(output / 'call_candidates.json',
+               child_candidates(gpu, npu, matches, npu_kernel_mapping_rows, op_map))
+    summary['reports'].append('call_candidates.json')
     if manual_enabled:
         from .manual_mapping import catalog
         from .provenance import write_json

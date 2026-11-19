@@ -74,6 +74,7 @@ class OpRecord:
     module_key: str = ""
     parent_index: Optional[int] = None
     kernel_indices: List[int] = field(default_factory=list)
+    step_name: str = ""
 
 
 @dataclass
@@ -99,6 +100,8 @@ class ParsedProfile:
     # Independent namespace: CUDA memcpy/memset are device activities, not
     # compute kernels. Keeping this separate preserves existing kernel IDs.
     memory_activities: List[KernelRecord] = field(default_factory=list)
+    # Autograd boundaries are evidence only. They do not change CPU op indices or kernel owners.
+    backward_scopes: List[TraceEvent] = field(default_factory=list)
 
 
 @dataclass
