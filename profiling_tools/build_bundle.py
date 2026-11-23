@@ -31,7 +31,7 @@ def build_bundle(output_dir):
     app = output / "profiling_tools.pyz"
     write_app(app)
     skill = output / "gpu-npu-profiling"
-    names = ["SKILL.md", "agents/openai.yaml", "scripts/run_compare.py"]
+    names = ["SKILL.md", "agents/openai.yaml", "scripts/run_compare.py", "scripts/build_op_type_comparison.py"]
     names += ["references/" + p.name for p in sorted((skill_source / "references").glob("*.md"))]
     for name in names:
         target = skill / name

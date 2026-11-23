@@ -82,6 +82,14 @@ python /absolute/path/dist/profiling-skill-0.3.0/gpu-npu-profiling/scripts/run_c
 
 示例请求：`使用 $gpu-npu-profiling 分析这个结果目录，解释 Slice 的低覆盖率，不重跑 trace。`
 
+需要类型对照表时有两种入口：要审查**单次调用能否映射**，用 `python -m profiling_tools tables`；要比较**不同数据批的类型、调用方及组件累计耗时**，用 skill 的聚合脚本，不改变引擎覆盖率：
+
+```bash
+python skills/gpu-npu-profiling/scripts/build_op_type_comparison.py --result-step10 results/step --result-all results/all --output-md reports/op_type_comparison.md --output-xlsx reports/op_type_comparison.xlsx
+```
+
+传入同一配对的两个已完成 result 目录，不是原始 trace。比值只用 GPU 计算 kernel 合计，不含显存操作；跨批结果不能直接解释为加速比。基线比较、去扰定义、已知配对复验及 Excel 依赖见[聚合对照表说明](../skills/gpu-npu-profiling/references/op-type-comparison-tables.md)。
+
 核心测试：`python -m unittest discover -s profiling_tools/tests`。skill 的行为验证用例在其 `references/evaluation.md`。缓存、流式读取、独立设备过滤和自动实验验证仍属于后续能力，不属于本版封装。
 
 建议 GPU、NPU 使用相同输入，并只采集一个稳定 step。采集时建议启用 `record_shapes=True`；如需 Module/源码辅助对齐，再启用 `with_stack=True` 或在两边加入同名 `record_function` 标记。

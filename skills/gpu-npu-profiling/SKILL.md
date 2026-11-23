@@ -12,7 +12,8 @@ Use the packaged Python engine for all parsing, mapping, accounting and determin
 - **New comparison:** User provides GPU trace, NPU trace and `kernel_details.csv`. Read [input-contract.md](references/input-contract.md), inspect inputs, resolve material scope ambiguity, then compare.
 - **Existing results:** Start with `summary` and `validate`. Do not reopen traces or rerun comparison unless needed and within the request.
 - **Specific operator/kernel investigation:** Start with `query` using exact type or scoped index. Read [investigation.md](references/investigation.md) when interpreting a gap. Read [metrics.md](references/metrics.md) before comparing ratios or combining views.
-- **Type comparison or hard-to-align calls:** Deliver the type table first. Use [call-alignment-tables.md](references/call-alignment-tables.md) to investigate gaps by caller, submit run-local decisions and generate the type and call-group workbook. Use this mode for comparison deliverables after a new run as well.
+- **Strict call review / mapping decisions:** Use [call-alignment-tables.md](references/call-alignment-tables.md) and `tables` to investigate gaps, submit run-local decisions and deliver the type and call-group workbook. Do not override failed evidence gates.
+- **Aggregate type + caller comparison / 对照表 / op_type_comparison:** Use [op-type-comparison-tables.md](references/op-type-comparison-tables.md) and `scripts/build_op_type_comparison.py` on validated Step and all-steps results. If cross-batch calls all remain `review`, that is expected: use this route for descriptive totals, not to promote any call. Run the known-pair verification before interpreting a new pair.
 
 Resolve this skill's absolute path. Run its `scripts/run_compare.py` with a Python 3.9+ interpreter, from any working directory. It uses the pinned zipapp in a distributed bundle or the repository implementation when used in its source checkout. It never installs dependencies or downloads traces.
 
@@ -40,6 +41,6 @@ These are templates, not shell strings assembled from trace data. Pass paths as 
 
 ## Deliver the requested result
 
-State the selected scope and validation status, the most important comparable/total metrics with their populations, and the highest-impact coverage gaps. For each investigated gap, cite the result file and kernel/call IDs, distinguish the observation from its hypothesis, and propose a specific next check. Link the XLSX and general Markdown report when generated. Do not dump full traces or all CSVs into the conversation.
+State the selected scope and validation status. For strict review, give comparable/total populations, coverage gaps and supporting call IDs. For the aggregate route, deliver the type tables first, then caller and component evidence, the caliber limitations and the kernel-only denominator; do not claim one-to-one matches. Link the generated Markdown and workbook if available.
 
 For behavioral regression scenarios, see [evaluation.md](references/evaluation.md) only when testing or changing this skill.
