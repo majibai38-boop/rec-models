@@ -18,12 +18,17 @@ dist/
 *.egg-info/
 node_modules/
 .pnpm-store/
-/profiling_web/data/
-/profiling_web/.env
+# Local worktrees and recoverable archives (never platform source)
+/.worktrees/
+/.local-archive/
 
 # Local node declarations and hardware captures
 /inventory.local.json
 /inventory-results/
+/benchmark-results/
+/experiments.local.json
+/cuda.local.json
+/ascend.local.json
 
 # Editors and operating systems
 .idea/
@@ -33,9 +38,8 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Logs and generated profiling output
+# Logs
 *.log
-infer_result/
 
 # Model and tensor artifacts
 *.ckpt

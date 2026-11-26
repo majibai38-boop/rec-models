@@ -1,311 +1,171 @@
-**推荐模型 Benchmark & Performance 平台方案**
+# 推荐模型 Benchmark 平台：第一阶段方案
 
-状态：规划已归档；[设备盘点工具](../benchmark_core/inventory/README.md)已实现，目标 GPU/NPU 节点采集待验收，其余平台能力尚未实施。后续任务、依赖与验收清单见[实施计划](recommendation-benchmark-platform-roadmap.md)。
+调整日期：2026-11-25。当前目标为 **Skill 驱动环境搭建、模型运行、性能采集；结果默认归档到本机，也可指定归档机器；Web 浏览性能与归档文件**。本版替代原先以集中控制面、节点 Agent 和多模型 suite 为首期前提的方案。任务拆分见[实施计划](recommendation-benchmark-platform-roadmap.md)。
 
-调研日期：2026-10-28。本文是基于公开一手资料与当前仓库静态检查的设计建议，尚未在 GPU/NPU 上验证部署、模型兼容性或性能。以下默认 NVIDIA GPU 与昇腾 NPU，执行节点为 Linux；其他 NPU 厂商需增加独立适配器。控制界面可从当前 Windows 工作站访问。
+当前已实现设备盘点和离线实验规划。以下 Skill、运行脚本、归档和 Web 均是待实现设计，不能据此认为已有可用命令或硬件支持。
 
-**建议在现有仓库上增加统一运行层，形成“Web / Skill → 同一份实验配置 → GPU/NPU 执行器 → 实测与诊断报告”的闭环。** 首期围绕少量固定节点、三个代表模型和单卡工作负载落地。现有 profiling 工具负责解释差异，新增 benchmark 引擎负责产生可复现的性能成绩。
+## 第一阶段范围
 
-**公开实现的取舍。** 本次查阅的项目各自覆盖流程的一部分；下面的组合与实施优先级是针对本仓库提出的设计判断。
+先用一个小型 DLRM 打通单卡、FP32、eager、固定步数 train step。保留 CUDA 与 Ascend 两种后端，按实际可用硬件逐一验收；一次只选择一个目标运行，不要求 GPU/NPU 成对提交。先完成一个后端的完整流程，再复用到另一个后端；未实测的后端明确标注“待验证”。
 
-| 参考实现 | 借鉴或复用 | 在本平台中的边界 |
-|---|---|---|
-| [MLPerf Training](https://github.com/mlcommons/training) | 模型、数据、质量目标、达到目标质量的耗时 | 借鉴训练评价协议；内部缩小模型不标记为正式 MLPerf 成绩 |
-| [MLPerf DLRM-v2 推理实现](https://github.com/mlcommons/inference/tree/master/recommendation/dlrm_v2/pytorch) / [LoadGen](https://github.com/mlcommons/inference/tree/master/loadgen) | 数据准备、质量检查、推理压测；后期实现 SUT/QSL 接口 | LoadGen 不负责模型移植、训练或精度计算；使用它不等于符合整套 MLPerf 规则 |
-| [TorchBench](https://github.com/pytorch/benchmark) | 统一模型接口、模型级依赖和 train/eval 入口 | 借鉴 adapter 组织方式，不能推断其全部模型支持昇腾 |
-| [MLCFlow](https://docs.mlcommons.org/mlcflow/) / [MLPerf Automations](https://docs.mlcommons.org/mlperf-automations/) | Python 包装脚本、YAML 元数据、依赖、缓存、容器与实验组织 | 先参考 recipe 设计；正式接 MLPerf 时作为外部 workload executor 接入，避免同时维护两套任务状态机 |
-| [TorchRec](https://meta-pytorch.org/torchrec/overview.html) / [FBGEMM](https://github.com/pytorch/FBGEMM) | embedding、分片规划、分布式推荐和 GPU 优化算子 | TorchRec 的优化依赖 FBGEMM 等后端能力，不能直接认为 CUDA 扩展可运行在 NPU |
-| [Ascend Rec SDK](https://github.com/Ascend/RecSDK/blob/develop/README_en.md) | 昇腾推荐训练、TorchRec 适配、稀疏表和分片能力 | NPU 优化轨优先评估的已有实现；不同组件能力与版本支持不同，不能推断任意 TorchRec 模型无修改兼容 |
-| [RecBole](https://github.com/RUCAIBox/RecBole) | 模型目录、统一数据格式、配置与推荐质量评价 | 可选择性导入模型；其训练器不能替代跨设备 benchmark 测量协议 |
-| [Ascend PyTorch 兼容表](https://github.com/Ascend/pytorch/blob/master/COMPATIBILITY.en.md) | PyTorch、torch_npu、CANN、Python 配套关系 | 环境必须按实际芯片、驱动、固件及官方支持组合验收；不使用浮动的 latest 作为实验环境 |
-| [msprof-analyze](https://github.com/Ascend/msprof-analyze/blob/master/docs/zh/user_guide/compare_tool_instruct.md) | 已有 GPU/NPU、NPU/NPU 性能比对及通信等分析入口 | 作为可选诊断插件或独立交叉检查；与现有引擎各自保留统计口径，不合并不同口径的总量 |
-| [OpenAI Skills](https://developers.openai.com/plugins/concepts/skills) | 将重复工作流封装为 SKILL.md、脚本、模板或 MCP 工具调用 | Skill 负责组织流程与解释；持久任务状态、执行和数值计算由服务与代码负责 |
+用户的三步操作保持为：
 
-模型方向需要考虑时间变化：MLCommons 2026 年 10 月介绍的 DLRMv4 已采用 HSTU 与 Yambda-5B；当前训练仓库列出了相应实现。因此 DLRM-v2 可作为成熟历史基线，同时为序列推荐预留接口。完整的大规模 HSTU 基准应放在容量与分布式能力具备之后。[DLRMv4 官方介绍](https://mlcommons.org/2026/10/dlrmv4-training/)
+| 步骤 | Skill 负责组织的动作 | 脚本负责的确定性动作 | 产物 |
+|---|---|---|---|
+| 1. 环境搭建 | 选择机器与环境配方，检查前提，执行准备，解释失败 | 设备盘点、配方校验、准备锁定镜像、设备透传验证、依赖与算子 smoke | 设备快照、环境版本、镜像 digest、准备日志、smoke 结果 |
+| 2. 模型运行 | 选择模型与参数，执行短跑，确认能进入测量 | 准备固定输入/初始状态，显式选择设备，前向/反向/更新检查 | 已解析配置、源码/数据/状态 hash、运行日志、正确性结果 |
+| 3. 性能采集 | 确定测量协议，调用采集，检查完整性并归档 | pilot、固定步数测量、重复汇总、可选独立 profiling、归档校验 | 原始样本、吞吐/时间/内存指标、可选 trace、manifest、文件清单 |
 
-**当前仓库已有分析基础，但缺少执行链路。** 下面的“已有”仅依据代码与文档，不表示本次做过运行验收。
+归档属于三步流程的收尾，用户无需再掌握一套任务系统；失败时也尽可能归档已有日志和状态。Web 可在归档后浏览结果，不参与环境搭建、模型提交和流程控制。
 
-| 模块 | 可复用能力 | 新平台需要补齐 |
-|---|---|---|
-| `profiling_tools` | trace 解析、调用与 kernel 关联、覆盖率、证据查询、报告和守恒校验 | 接收运行器自动产生的文件与 manifest；建立 run 到分析结果的关联 |
-| `profiling_web` | FastAPI、Vue 3、ECharts、任务历史、取消、结果下钻 | 实验创建、资源状态、远程运行日志、跨实验比较和测量指标 |
-| `workload_modeler` | 版本化硬件/平台规格、workload 画像、假设与预测 | 与真实执行节点关联；预测和实测分开展示 |
-| `skills/gpu-npu-profiling` | 规范化分析流程、CLI 和证据解释 | 新建 `rec-benchmark` skill，负责创建与跟踪实验；保留原 skill 的分析职责 |
-| `web_shared` | 共同主题和视觉规范 | 扩展平台导航与通用状态组件 |
+首期不建设集中调度、常驻节点 Agent、PostgreSQL、设备租约服务、团队权限系统或 Web 任务编辑器。只支持用户明确选择的设备，运行脚本在本机持有设备互斥锁并检查占用；不自动选卡、抢占或排队。三模型 suite、真实数据业务质量评估、多卡多机、自动回归、训练达标时间和服务推理延后。
 
-依据：[仓库定位](../README.md)、[Web 运行边界](../profiling_web/README.md)、[现有分析 runner](../profiling_web/runner.py)、[Workload Modeler](../workload_modeler/README.md)。已有 Dockerfile 是分析服务镜像，不能当作模型执行镜像；已有队列也不能直接当作跨节点设备调度器。
+## Skill 与脚本的分工
 
-现状检查包含 2026-10-28 工作区中已有的未提交变更；本次规划提交不包含这些代码。开始实施时需重新确认当前分支实际具备的能力，尤其是 `web_shared`、Workload Modeler 的规格管理与共享界面，避免把工作区观察当成已合入的基线。
+`rec-benchmark` Skill 是主入口和流程编排者：收集参数 → 选择配方 → 调用环境准备 → 调用模型短跑 → 调用性能采集 → 校验归档 → 返回摘要和链接。Skill 决定下一步、处理结构化错误、按需重试归档；不依赖一个新的提交任务 API 才能工作。
 
-**架构采用一个控制面、两个设备后端，以及共用的实验与产物协议。** 首期使用现有 FastAPI/Vue/ECharts 技术栈，新增 PostgreSQL 保存任务与资源状态。少量节点由 agent 拉取任务并启动本机容器；大文件先存控制节点专用目录，后续通过存储接口切换至 S3 兼容对象存储。
+脚本提供可重复执行的具体动作，不从自然语言或日志猜测成功：使用退出码、阶段结果 JSON 和实际产物判定。模型输出、同步计时、指标统计、hash 和文件传输由脚本计算；Skill 读取结果后解释，不自行计算另一套成绩。手动 CLI 与 Skill 调用同一实现，便于调试和重放。
+
+Skill 每步核对 `run_id / attempt_id` 与输入 hash，并把阶段日志落盘。首次建 run 后，在同一 attempt 中完成三步；重新执行模型或测量使用新 attempt。归档重试沿用原 attempt，不重新跑模型。中断后检查进程、互斥锁和已有产物，再明确继续或新建 attempt；首期不承诺对话结束后自动后台续跑。
 
 ```mermaid
-flowchart TB
-    WEB[Web 实验工作台] --> API[Benchmark API]
-    SKILL[rec-benchmark Skill] --> CLI[CLI 或 MCP 工具]
-    CLI --> API
-    API --> CATALOG[模型 / 数据 / 环境目录]
-    API --> DB[(PostgreSQL 实验与任务)]
-    DB --> SCHED[调度器与设备租约]
-    SCHED --> GPU[Linux GPU Agent]
-    SCHED --> NPU[Linux Ascend Agent]
-    GPU --> CUDA[CUDA 运行容器]
-    NPU --> ASCEND[CANN + torch_npu 容器]
-    CUDA --> STORE[原始指标 / 日志 / Trace / Manifest]
-    ASCEND --> STORE
-    STORE --> METRICS[测量校验与对比]
-    STORE --> PROFILE[profiling_tools 分析]
-    STORE --> MODEL[workload_modeler 估算]
-    METRICS --> RESULT[报告与可视化]
-    PROFILE --> RESULT
-    MODEL --> RESULT
-    RESULT --> WEB
-    RESULT --> CLI
+flowchart LR
+    USER[用户] --> SKILL[rec-benchmark Skill]
+    SKILL --> ENV[环境搭建脚本]
+    ENV --> RUN[模型运行脚本]
+    RUN --> PERF[性能采集脚本]
+    PERF --> ARCHIVE[归档：本机或指定机器]
+    ARCHIVE --> WEB[只读 Web：性能与文件]
+    ENV --> LOG[阶段日志与失败证据]
+    RUN --> LOG
+    PERF --> LOG
+    LOG --> ARCHIVE
 ```
 
-控制服务不必安装 CUDA/CANN，也不直接运行业务模型。现有分析 worker 保持独立，避免大 trace 解析拖住设备调度。执行器只接收注册的 workload、锁定镜像和校验后的参数，以结构化参数启动容器。
+图中顺序由 Skill 编排，脚本间不需要消息队列或常驻调度服务。
 
-数据库持有唯一的任务状态；无需首期叠加 Celery、Redis、Argo 和 MLflow。agent 有独立身份与心跳，设备采用独占租约。多人共享时增加用户/项目权限，不能把当前本机共享 token 模式直接扩大为团队权限体系。若团队已有 Kubernetes 或 Slurm，优先对接现有集群，通过 executor 接口替换固定节点调度。
+## 执行机器与归档机器
 
-**实验分成三种模式和两条实现轨。** 模式决定“测什么”，实现轨决定“允许怎样实现”。两者都是必须写入配置、筛选器和报告的字段。
+两者独立配置。执行机器承载模型进程，归档机器保存已完成或失败实验的证据。第一阶段先支持在执行机器上启动 Skill/CLI；跨机器模型调度放到后续，**指定远程归档机器纳入第一阶段**。
 
-| 评测模式 | 测量内容 | 适用阶段 |
-|---|---|---|
-| 固定步数性能 | forward 或完整 train step，稳态吞吐、step 延迟、显存 | MVP 主线；train step 必须声明是否包含 backward、optimizer、通信与数据输入 |
-| 推理服务性能 | 固定 checkpoint，业务质量、给定到达率/并发下吞吐和请求尾延迟 | 第二阶段；batch latency 不能当作在线请求 latency |
-| 训练到目标质量 | 固定数据与评价协议，达到目标 AUC/NDCG 等所需总时间 | 后续；固定步数快不等于训练到目标更快 |
+“本机”固定指启动本次 Skill/CLI 流程的宿主机，不是容器内部。归档默认路径为该入口工作区的 `benchmark-results/archive`，入口启动时转换为绝对路径并记录主机身份。默认执行也在该宿主机。将来增加远程执行时，不能因此悄悄改变默认归档位置。
 
-共同实现轨 `common-portable` 使用相同模型语义、权重、输入与数值策略，优先采用两端可支持的 PyTorch 算子。它用于建立可比基线，但跨硬件结果仍包含各自编译器、运行时和主机系统的差异。
-
-后端优化轨 `backend-optimized` 允许 GPU 使用 FBGEMM/融合算子，NPU 使用经验证的专用实现；必须记录实现版本、算法与精度策略差异，并通过约定的质量门槛。此轨表示完整方案比较，不能把结果归因成纯芯片差距。两轨不混合排名。
-
-NPU 优化轨应先评估 Rec SDK 的 TorchRec 适配能力，按模型核对 embedding、分片、优化器和自定义算子覆盖，减少自研范围。其安装配方有独立的 PyTorch/torch_npu/FBGEMM/Rec SDK 配套要求，必须与基础 torch_npu 兼容矩阵取交集，不能拼接任意版本。[Rec SDK 安装说明](https://github.com/Ascend/RecSDK/blob/develop/docs/en/torch/torch_rec_v1/recsdk_torch_installation_guide.md)
-
-**模型适配和设备适配分开实现。** 借鉴 TorchBench 的模型接口思想，提出以下本平台接口；这些名称是设计草案，并非当前仓库已提供的 API。
-
-```text
-WorkloadAdapter
-  capabilities()              # backend / dtype / mode / distributed / compile
-  prepare_dataset(spec)
-  build_model(spec, backend)
-  load_checkpoint(checkpoint)
-  make_batch(input_spec)
-  train_step(batch) / infer_step(batch)
-  validate(reference, policy)
-  export_metadata()
-
-BackendAdapter
-  probe_environment()
-  select_device()
-  synchronize()
-  autocast(policy)
-  memory_stats()
-  distributed_backend()
-  profiler_session(config)
-  export_profile()
-```
-
-`cuda` 和 `ascend` 后端分别实现同步、混合精度、内存统计、通信及采集。NCCL/HCCL、embedding 分片、稀疏梯度、融合优化器与编译器能力分别声明，不把替换 `.cuda()` 为 `.npu()` 视作适配完成。不支持的组合在计划阶段返回 `unsupported`；任何 CPU fallback 必须显式声明并进入独立测试类型，禁止静默混入加速器成绩。
-
-**环境搭建分为节点准备与实验准备。** 节点准备安装并验证宿主机驱动、固件、设备容器 runtime 和通信条件；实验准备只选择已验收的软件镜像、代码和数据。容器并不能屏蔽宿主驱动兼容问题。
-
-| 环境对象 | 必须冻结或记录的内容 |
+| 配置 | 默认与约束 |
 |---|---|
-| 硬件 | 厂商、芯片/SKU、设备数、显存、CPU/NUMA、内存、互联拓扑、功率/频率策略 |
-| 宿主环境 | OS/kernel、驱动、固件、容器 runtime、设备挂载与权限、通信链路 |
-| 模型镜像 | 镜像 digest、CPU 架构、Python、PyTorch、CUDA 或 CANN/torch_npu、通信库、依赖锁文件 |
-| 模型与数据 | 代码 commit、本地补丁 hash、adapter 版本、checkpoint hash、数据与预处理版本 |
-| 执行条件 | dtype、TF32/AMP、编译模式、embedding 放置、线程数、CPU 绑定、设备占用、随机种子 |
+| `execution` | 第一阶段使用 `local`，显式指定 backend 与设备标识 |
+| `archive.transport` | 默认 `local`；可选择 `ssh` |
+| `archive.host` | local 时为 localhost；ssh 时使用已有 SSH 配置别名 |
+| `archive.root` | local 默认工作区下的 `benchmark-results/archive`；ssh 必须显式填写目标机绝对路径 |
+| `archive.web_base_url` | 可选，指向已启动的归档浏览服务；未配置时仅返回归档位置，不编造网页链接 |
 
-GPU/NPU 使用不同镜像，但尽量选取双方都支持的 PyTorch 版本。无法相同时，将框架差异保留为比较条件，不伪装成相同栈。镜像构建与缓存发生在正式测量前；每个镜像先通过 import、设备检查、矩阵运算、embedding、反向传播及小模型 smoke test，多卡阶段再加 collective 验收。具体版本在掌握实际卡型和节点后，按官方矩阵确定。
+归档使用本机目录或 SSH/SFTP，不要求部署节点 Agent。远端只需可写归档目录、SSH/SFTP 和用于校验/发布的轻量 Python helper；凭证使用既有 SSH 配置，不写进实验 manifest。先预检连接、权限和空间，网络故障时保留执行机上的完整暂存目录，提供只重试归档的入口。
 
-**推荐模型库按计算模式覆盖，首期控制在三个代表模型。**
+以下为拟新增的独立 workflow 配置草案，**目前 CLI 不接受此 schema**。已有 BenchmarkSpec 严格拒绝未知字段，不将归档配置直接塞进其 v1 对象。
 
-| 阶段 | 模型/工作负载 | 想覆盖的性能特征 |
-|---|---|---|
-| 首期 | DeepFM 或 DCNv2 的可移植小模型 | embedding、MLP、特征交互 |
-| 首期 | 小型 DLRM | 多表 embedding、pooling、稠密/稀疏混合、反向更新 |
-| 首期 | DIN | 变长用户序列、attention 与 gather/scatter |
-| 扩展 | 成熟历史 DLRM-v2 标准配方 | 大规模 multi-hot、真实数据与质量目标 |
-| 扩展 | HSTU / DLRMv4 相关配方 | 长序列、jagged tensor、融合算子、大 embedding |
-| 扩展 | 分布式 embedding、AllToAll、GEMM 微基准 | 隔离通信、带宽与算子瓶颈；辅助解释模型结果 |
-
-如果主要业务已采用 HSTU，可将首期 DIN 替换为经简化且明确标记的 HSTU workload，保持首期模型数量不变。官方规模的模型、真实业务模型和缩小的内部 workload 使用不同 ID，不能只因名称相似就横向排名。
-
-数据分三层：合成数据验证执行与定位瓶颈；固定公开数据子集验证业务质量；正式数据规模评估真实资源压力。需要保存表容量、embedding 维度、ID 热点/访问分布、multi-hot 长度分布、序列长度分布、重复率、padding 与截断策略。相同 seed 不保证不同后端随机生成的数据相同；严格配对实验优先使用统一 CPU 生成并持久化的输入，以及相同 checkpoint。
-
-真实数据增加数据集许可/获取方式、split、特征词表、预处理代码及输出校验和。CTR 质量用 AUC/logloss；召回和序列推荐用 Recall@K/NDCG@K，并冻结候选集和负采样协议。合成数据上的数值一致性通过只能说明功能门禁通过，不能代表真实质量达标。
-
-**端到端流程以可恢复的阶段呈现。** 一次用户实验展开为多个 run，每个 run 对应一个明确的后端、模型、精度、batch 与重复编号。
-
-```text
-创建实验 → 校验配置与兼容性 → 分配设备 → 准备镜像/代码/数据
-        → 正确性检查 → 编译/预热 → 正式性能测量 → 保存实测结果
-        → 独立 Profiling 运行 → 产物校验 → 双侧分析 → 报告
+```json
+{
+  "schema_version": "recbench.workflow/v1",
+  "benchmark_spec": "experiments.local.json",
+  "inventory_config": "inventory.local.json",
+  "environment_recipe": "cuda.local.json",
+  "target_id": "gpu",
+  "execution": {"transport": "local"},
+  "archive": {"transport": "local", "host": "localhost", "root": "benchmark-results/archive", "web_base_url": null},
+  "profile": {"enabled": false}
+}
 ```
 
-正式测量与 profiling 是关联的独立执行记录。性能阶段关闭 profiler；profiling 阶段复用被冻结的 workload 条件并选取有代表性的稳定 step。profiling 失败时保留有效实测结果，单独显示诊断失败。分析不得根据相同 step 编号自动认定两端工作量相同。
+`benchmark_spec` 的目标引用作为 backend、设备和配方身份的唯一来源；`target_id` 选择其中一个目标。执行脚本从原声明派生仅含所选 target 的有效配置，保留原始声明及其 hash，然后调用现有校验；不改写原文件，也不要求未选目标的快照或配方。示例路径须由用户配置，所有相对路径以 workflow 文件目录为基准解析。`archive.root` 未填写时使用入口工作区默认路径；显式相对路径按 workflow 目录解析。入口工作区与解析后的绝对路径写入 manifest。
 
-正确性门禁必须覆盖正式测量实际使用的精度、编译和融合路径；启用编译时先准备该路径再校验。校验、pilot、预热会改变训练状态，因此每次正式重复和 profiling 重放前恢复受控的模型、optimizer、随机状态与数据游标，再执行双方一致的预热与输入序列。记录 profiling 的逻辑步骤偏移，确保它对应约定训练阶段。状态恢复和编译准备在正式计时窗外完成。
+指定归档机器时只替换 archive 配置，例如：
 
-每个阶段记录开始/结束、状态、日志和产物。API 提交返回实验 ID 后立即结束请求，关掉浏览器或结束对话不影响运行。建议状态包括 `queued / preparing / validating / warming / measuring / profiling / analyzing / succeeded`，终止状态区分 `failed / canceled / unsupported`，并分别记录 performance、quality、profile 的有效性。
+```json
+{"transport": "ssh", "host": "bench-archive", "root": "/srv/rec-benchmark/archive", "web_base_url": "http://bench-archive:8080"}
+```
 
-设备租约含心跳与 fencing token；控制面重启可从数据库恢复。节点失联后先进入待核实状态，确认旧进程已结束后再复用设备，不能仅因租约超时就启动第二份工作。取消需终止容器/分布式进程组并确认资源释放。基础设施错误可有限重试并创建新 attempt；数值错误、OOM 与不支持的算子保留原始失败证据。
+该地址仅是配置示例，不表示已部署服务。执行机器需要能通过 SSH 上传；用户浏览器需要能访问该机器上的 Web 服务。Web 通常部署在归档机器上，读取其本地归档根目录；本地 Web 不会自动读取远端 SSH 路径。
 
-**测量协议先于排行榜实现。** PyTorch 的 benchmark 工具明确考虑预热及异步设备同步，本平台也必须在各后端验证这些行为，不能仅测 Python 发起调用的时间。[PyTorch benchmark 文档](https://docs.pytorch.org/docs/2.14/benchmark_utils.html)
+## 三步的实现边界
 
-| 指标 | 建议定义与约束 |
+**环境搭建。** 首期采用现有配方体系的锁定容器镜像路线：检查宿主机驱动和容器工具 → 校验配方 → 拉取已登记 digest 的镜像（或按受控 recipe 构建后解析 digest）→ 运行设备和依赖 smoke。CUDA、CANN/torch_npu 使用独立配方。记录实际容器内 Python/torch/toolkit 版本，与预期逐项核对；宿主机安装的 torch 不作为容器版本证据。宿主机驱动安装/升级作为人工前提，不纳入自动准备流程。
+
+已有 draft 配方可做结构检查，但必须解析为 pinned 配方才能运行。第一阶段无需同时实现 venv/conda/裸机/多种容器工具；若后续确需现有裸机环境，另加明确模式和验收。Linux GPU/NPU 作为执行目标；Windows 上现有盘点能力仍可保留，不能据此声称 Windows 加速器运行已支持。
+
+**模型运行。** 先实现小型 DLRM adapter，生成固定输入及初始训练状态并记录 hash。执行短跑以确认模型确实在所选设备完成前向、loss、反向和 optimizer update；拒绝静默 CPU fallback。保存数值检查结果和依据，参考值及容差属于模型配方。合成数据的功能/数值检查不等于真实业务 AUC/NDCG 验收。
+
+**性能采集。** 正式性能测量关闭 profiler；如启用 profiling，恢复受控训练状态后另跑一次短采集，归档原始 trace 和采集元数据。第一阶段展示 trace 文件及下载，不建设 kernel 对齐或深度分析工作台。测量失败、profiling 失败和归档失败分别记录，不互相冒充，也不删除有效原始测量。
+
+当前 planning 工具仍保持严格准入。为避免“必须先有全部 hash 和正式步数才能准备环境”的循环，执行流程分层验证：先结构与环境检查 → 模型短跑生成数据/状态/源码/策略 hash → 独立 pilot 选择步数 → 输出新的 resolved spec 并通过完整准入 → 恢复状态后正式测量。保留原始声明，不覆盖用户草案；不伪造 hash 或关闭校验。
+
+## 最小测量与数据协议
+
+沿用单卡、FP32、eager、固定步数协议。建议起点为 warmup 50、独立重复 5 次；pilot 选定 N 后固定，记录实际窗口时长。每次重复恢复模型、optimizer、RNG 和输入游标，再执行同一预热与正式输入序列。状态准备在正式窗口外，窗口开始/结束正确等待设备完成。
+
+| 首期指标 | 定义 |
 |---|---|
-| 模型吞吐 | 计时窗口内实际完成的样本数 / 墙钟秒数；训练记录全局 batch 与梯度累积，不能无条件再乘卡数 |
-| step latency | 定义清楚的 step 完成时间，报告分布；孤立同步 step 与连续执行均摊 step 分开 |
-| 推理请求延迟 | 从约定请求入口到完成的端到端延迟，保留到达率、排队、并发和批处理策略 |
-| 内存 | 分别记录框架 allocated/reserved 峰值和设备级占用；不同来源不混为一个指标 |
-| 质量 | 分别记录数值一致性和业务质量，失败结果仍可诊断但不进入通过门槛的榜单 |
-| 训练效率 | 到达质量目标的时间与完整训练预算，和固定步数吞吐分开 |
-| 功率与能耗 | 仅在采样源、时间窗和设备/系统边界明确时报告；不同厂商利用率计数器不默认等价 |
-| kernel / 通信时间 | 作为诊断信息；事件时长求和可能含重叠，不能替代墙钟 step 时间 |
+| 吞吐 samples/s | 正式窗口实际完成的样本数 / 同步后的墙钟秒数 |
+| 平均 step 时间 ms | 正式窗口墙钟时间 / 完成步数；明确标注窗口均摊值，不当作逐 step 延迟分布 |
+| 重复实验统计 | 保存各次原始值、中位数及 min/max，展示样本次数 |
+| 内存峰值 bytes | 标明框架 allocated/reserved 或设备级来源；不支持时保存 null 和原因，不填 0 |
+| 功能与数值状态 | 是否使用目标设备、检查项、容差、结果；独立于归档是否成功 |
 
-至少区分 `device_only`（输入已在设备，协议明确计算边界）与 `end_to_end`（包含数据读取/组 batch、传输和计算）两种范围。数据预处理、镜像拉取、初始化和编译耗时单独展示。吞吐测试在测量窗口边界正确同步，避免为每一步添加屏障改变流水；需要孤立 step 分布时另设测试模式。多卡测量需要保证所有 rank 完成，并保存各 rank 和整体范围。
+`end_to_end` 包含固定输入获取、传输和 train step；`device_only` 输入提前位于设备，需另标范围。第一阶段优先打通一个明确 scope，不因暂未实现另一种 scope 阻塞。没有真实逐 step 样本时不计算 P95/P99；kernel 时间求和不代替墙钟吞吐。
 
-MVP 的可调整起点是每组配置 5 次独立重复、至少 50 个共同预热 step。先用独立 pilot 确定双方一致的正式步数 N（建议 N 至少 200，并使两端正式计时都达到约 30 秒），再冻结 N 与输入序列；正式运行不能由每个后端自行按时长停止。若计时不足，增加整组实验的 N 后重测。固定时长吞吐可作为另一种明确协议。这些是内部建议值，不是 MLPerf 规则。编译或动态 shape 工作负载需在 pilot 中确定更长的共同预热与稳定性条件，无法稳定就标记不稳定。5 次独立运行用于评估运行间波动；尾延迟需要足够的请求样本与指定负载，不能由少量汇总点生成可信 P99。
+保留 `workload_sha256` 与环境指纹的区别。单次结果可以独立浏览；只有模型、数据/初始状态、batch、精度、预热、正式步数和计时口径等一致时才计算跨设备倍率。不要求成对运行作为首期使用前提。
 
-结果默认报告各次原始值、中位数与波动范围。持续回归固定节点、软件栈和协议，必要时交替执行 baseline/candidate，采用重复实验与区间估计排查噪声。可将“超过 5% 且超过观测噪声”作为初始告警策略，但需由首批稳定性实验校准；不得把所有波动都判作回归。
+## 归档协议与 Web
 
-跨设备比较前必须检查模型版本、输入/checkpoint、模式、batch、精度策略、warmup、计时范围、实现轨、分片和 embedding 放置等条件。硬件和后端软件的差异作为比较维度明确展示；协议不一致的结果只能并排查看。若采用速度倍率，明确 `NPU 相对 GPU 的速度 = GPU 时间 / NPU 时间`，同样工作量下大于 1 表示 NPU 更快。不能与反方向的时间倍率混淆。
-
-**一次实验必须留下可追溯记录。** 推荐对象关系为 `Experiment → Run → Attempt → Metric / Artifact`；对比对象额外引用两端 run、对应 profiling 执行、范围选择以及分析引擎版本。计划阶段的输入条件指纹与运行后的环境指纹分别记录，不能因为环境不同就丢失 workload 配对关系。
+本地暂存与最终归档采用同一目录协议，Web 无需了解 Skill 对话内容就能完整展示结果：
 
 ```text
-实验记录
-  resolved_spec.json          # 展开后的完整配置与协议版本
-  manifest.json               # 代码/数据/checkpoint/环境/硬件指纹
-  correctness.json            # 数值检查、质量指标和门槛结果
-  metrics.json               # 带 unit、scope、来源和有效性的指标
-  measurements.jsonl         # 原始重复/窗口/请求样本
-  stdout.log / stderr.log
-  profile/<profile_run_id>/   # 原始采集、metadata、导出文件
-  analysis/<analysis_id>/     # 现有分析引擎产物与版本
+<archive_root>/runs/<run_id>/<attempt_id>/
+  request.json                # 原始 workflow 与实验声明，去除凭证
+  resolved_spec.json          # 本次冻结后的测量配置
+  manifest.json               # 版本、设备、各阶段状态、指纹与时间
+  inventory.json
+  environment.json
+  correctness.json
+  metrics.json
+  measurements.jsonl
+  logs/                      # 环境、短跑、测量、profiling 日志
+  profile/                   # 可选原始 trace 与采集元数据
+  artifacts.json             # 相对路径、大小、SHA256、媒体类型
+  COMPLETE                   # 归档校验完成的发布标记，不表示 benchmark 成功
 ```
 
-大文件先在 agent 本地完整落盘，生成内容 hash 后上传；服务端校验 hash 并原子发布产物清单。重试不能覆盖已完成结果。数据库只保存结构化记录、索引和产物地址，不保存整个 trace。采集格式与解析器版本必须固定：缺少 NPU kernel 明细时标记 profile 不完整，不能填空文件伪造“没有算子”；字段缺失或 step 不明确应阻止依赖该信息的分析。
+失败实验允许缺少尚未产生的文件，manifest 列出实际完成阶段、缺失项及原因；它也可以是完整归档。`manifest` 至少区分 `prepare / run / measure / profile` 的状态与指标有效性。归档发布状态由暂存/COMPLETE 及执行机上的传输回执记录，避免修改已校验的 manifest 导致 hash 失效。未启用 profile 标记 `skipped`。
 
-对接 Ascend profiler 时固定 Text 导出与 NPU activity；`kernel_details.csv`、内存和通信文件是否生成取决于采集设置，Step Id 也可能为空。保存原始数据、导出文件及 profiler 配置，按范围校验后再交给分析引擎。[Ascend PyTorch Profiler 指南](https://www.hiascend.com/document/detail/en/mindstudio/2600/TITools/ascend_pytorch_profiler/docs/en/ascend_pytorch_profiler/ascend_pytorch_profiler_user_guide.md)
+上传先进入同一文件系统的临时目录，校验清单中各文件大小/hash，再原子发布最终 attempt 目录；清单不包含自己和 COMPLETE。重试相同 attempt 时核对清单与已发布内容，完全相同则返回已有记录；内容不同则冲突，不覆盖。归档失败保留本地文件和传输日志，允许单独重试。Web 仅索引已发布归档；校验失败显示归档异常，不将缺失指标当成 0。
 
-下面是建议的配置草案，示例 ID 和参数需在模型及环境目录注册后才能运行；当前仓库尚未实现这些字段或命令。
+Web 第一版采用轻量只读 Python 服务加简单页面，先扫描文件归档；不以数据库或独立前端工程为前置依赖。后续数据量增加时可加可重建索引，但归档文件仍为事实来源。
 
-```yaml
-schema_version: recbench/v1
-name: dlrm-small-portable-pair
-workload:
-  id: dlrm-small
-  revision: "<pinned-model-commit>"
-  implementation_track: common-portable
-  mode: train_step
-  parameters:
-    embedding_dim: 64
-    table_sizes: [100000, 100000, 100000]
-    pooling: sum
-data:
-  id: synthetic-fixed-inputs-v1
-  artifact_sha256: "<resolved-input-hash>"
-  sequence_distribution: fixed-20
-  access_distribution: "<registered-distribution-profile>"
-initial_state:
-  checkpoint_sha256: "<shared-initial-state-hash>"
-  training_state_sha256: "<optimizer-rng-and-data-cursor-state-hash>"
-targets:
-  - backend: cuda
-    environment: "<validated-gpu-environment-id>"
-    devices: 1
-  - backend: ascend
-    environment: "<validated-npu-environment-id>"
-    devices: 1
-matrix:
-  batch_size: [256, 1024]
-  precision: [fp32]
-measurement:
-  scope: end_to_end
-  protocol: fixed_steps
-  pilot_target_seconds: 30
-  warmup_steps: 50
-  measure_steps: "<pilot-derived-shared-N>"
-  independent_repeats: 5
-  restore_state_before_each_repeat: true
-  profiler_enabled: false
-correctness:
-  policy: "<model-specific-validated-policy>"
-profile:
-  separate_run: true
-  stable_steps: 3
-  capture_shapes: true
-  capture_stacks: false
-```
-
-正确性 policy 应明确输出、loss、梯度/更新检查以及 dtype 对应容差；不能只检查“loss 是有限数”。示例合成数据不能配置成真实业务质量已通过。每个 target 在解析后拥有自己的环境 digest，镜像和数据指纹进入最终 manifest。
-
-**Web 与 Skill 使用同一个服务接口。** Web 负责长期可视化和交互，Skill 负责把自然语言转换为配置、调用工具、跟踪状态并解释证据。
-
-| 页面 | 需要呈现的内容 |
+| 页面 | 首期内容 |
 |---|---|
-| 环境与设备 | 节点健康、卡型、驱动/软件版本、验证状态、空闲/占用、环境配方 |
-| 模型与数据 | adapter、可用后端/精度/模式、数据来源、表/序列分布与质量协议 |
-| 创建实验 | 模型 × backend × batch × dtype 矩阵、指标口径、资源需求、实验展开预览 |
-| 运行详情 | 持久阶段进度、实时日志、开始/结束时间、指标曲线、取消与失败原因 |
-| 实测比较 | 同条件筛选、吞吐/延迟/显存、波动、质量状态、环境差异、历史回归 |
-| 性能诊断 | 复用现有类型、shape、CPU scope、kernel、覆盖率与证据下钻 |
-| 性能估算 | 复用 workload_modeler，始终标明预测假设、覆盖率和待验证部分 |
+| 运行列表 | 模型、后端、设备、时间、各阶段状态、主要指标；按模型/后端/状态筛选 |
+| 运行详情 | 配置、环境、正确性、测量口径、重复结果、原始值和可选对比 |
+| 文件浏览 | 文件类型、大小、hash，JSON/文本日志预览，trace/其他产物下载 |
 
-阶段进度只展示真实状态；未知时长阶段不用虚构整体完成百分比。Web 可先采用现有轮询模式，再按日志规模添加 SSE。原始 trace 下载与现有报告继续可用；远期增加时间线查看器，但它不作为平台首期阻塞项。
+网页只提供查询、预览与下载，不提供提交任务、安装环境、修改或删除归档。文件 API 依据已登记清单定位归档内文件，限制路径穿越和符号链接越界；文本/HTML 内容作为文本展示。服务默认监听本机；局域网访问显式配置监听地址及必要的访问控制，不做首期团队用户体系。
 
-建议 API 包括 `validate_spec / create_experiment / submit / get_status / list_metrics / cancel / compare / list_artifacts`。创建/提交支持幂等键，避免 Skill 重试导致重复占卡。数据、权限和状态存储在服务中。
+## 代码组织与现有实现衔接
 
-Skill 的典型交互可以是：用户输入“用两台已注册机器测 DLRM，batch 256 和 1024，比较 FP32 train step”。Skill 选择已有模板并解析配置，提交后返回实验链接；运行完成后按质量有效性、端到端指标、再到算子证据的顺序报告。MVP 可调用同一个 Python CLI/HTTP API；有跨机器工具发现需求时再封装 MCP。CLI、Web 与 Skill 都不各自维护一套统计公式。
+| 模块 | 处理方式 |
+|---|---|
+| `benchmark_core/inventory/` | 保留，作为环境准备的实际设备证据来源 |
+| `benchmark_core/planning/` | 保留，复用合同、规则和指纹；单目标解析按现有合同演进，不能伪造另一个目标的快照 |
+| `benchmark_catalog/` | 保留现有 profile/配方/实验，新增首个模型与 workflow 示例 |
+| `skills/rec-benchmark/` | 新增 Skill 主流程、三步操作说明及失败/归档重试指导 |
+| `benchmark_core/workflow/` | 新增阶段命令与状态文件；无常驻调度服务 |
+| `benchmark_core/workloads/`、`backends/`、`measurement/` | 新增小型 DLRM、设备适配和确定性测量 |
+| `benchmark_core/archive/` | 新增本地/SSH 归档、校验及发布辅助命令 |
+| `benchmark_web/` | 新增只读归档浏览服务与页面 |
 
-**建议的代码增量。** 先新增边界清晰的运行模块，通过接口接入当前分析工具。下面都是建议新增结构，不代表已经实现。
+本次仅调整文档；当前 v1 BenchmarkSpec、配方校验和现有 CLI 行为不变。上述新目录和 workflow schema 都在实施计划中，不能作为已实现功能使用。
 
-```text
-benchmark_core/
-  schema.py                  # spec / manifest / metric / artifact
-  workloads/                 # 模型适配器与能力声明
-  backends/                  # cuda / ascend
-  measurement/               # 正确性、计时、重复与独立采集
-  cli.py
-benchmark_service/
-  api/                       # 实验、运行、指标、产物
-  scheduler/                 # 资源匹配、独占租约、状态恢复
-  agent/                     # 节点预检、容器启动、日志与产物上传
-  integrations/              # profiling_tools、现有工作台桥接
-benchmark_catalog/
-  environments/
-  models/
-  datasets/
-  suites/
-skills/rec-benchmark/
-profiling_tools/              # 复用
-profiling_web/frontend/       # 扩展平台导航和页面
-workload_modeler/             # 保持估算职责
-```
+## 第一阶段完成标志与后续范围
 
-逐步抽取硬件/平台目录的共用 schema；先读取和冻结现有版本快照，不立即合并两个现有工具的数据库。实验编排数据库、分析任务和预测任务通过明确 ID 关联，防止“分析完成”被误认为“模型 benchmark 成功”。
+第一阶段交付一个用户能通过 Skill 完成三步流程、把结果归档到本机或指定 SSH 机器、再在 Web 查询性能与下载产物的闭环。验收必须包含实际设备测量以及本地/远端归档场景；设备不可访问时，只能标记对应软件验证通过，不能宣布该后端已验收。
 
-**实施节奏建议为 6–8 周完成可用 MVP。** 这是以 2 名工程师、兼职性能/运维支持、现成可访问的 GPU/NPU 节点为前提的估计；复杂 NPU 算子移植、设备采购、官方规模数据准备与多机训练不包含在此周期内。
+集中服务、队列/租约/Agent、自动远程模型执行、Web 提交任务、多模型/真实数据质量 suite、复杂 trace 分析、对象存储、团队权限和持续回归，均在这个闭环稳定之后按需求推进。
 
-首版默认范围固定为单卡、FP32、eager、共同实现轨和固定步数 train step，可额外提供同模型 forward 测试。混合精度、编译、后端优化和分布式能力先进入 schema 与能力声明，未经单独验收不开放执行。
-
-| 时间 | 交付内容 | 验收条件 |
-|---|---|---|
-| 第 1 周 | 设备盘点、版本组合、Spec/Manifest/指标协议、首个小模型 | 同一输入与初始状态在两端完成数值检查，环境可重建 |
-| 第 2–3 周 | 两类容器/agent、任务状态、CLI、正式测量和独立 profiling | 一个实验自动跑两端；产物完整；关闭客户端不影响任务 |
-| 第 4–5 周 | Web 流程、Skill、三个模型、分析引擎桥接 | Web 和 Skill 的同配置产生相同配置指纹；能从差异进入现有证据页 |
-| 第 6–8 周 | 固定真实数据子集、重复实验、历史比较、故障恢复与回归报告 | 质量门槛生效；失败/取消/重启可追溯；同条件重复波动可量化 |
-| 后续 | 服务推理/LoadGen、训练到目标质量、多卡/多机、HSTU 与优化轨 | 每个能力有单独的正确性、资源与测量验收后才进入正式 suite |
-
-MVP 的终点应是：用户在 Web 或 Skill 选择模型与两种后端，一次提交后可看到环境准备、运行与分析过程；得到带质量状态、波动和完整环境指纹的实测比较，且能定位到原始日志和 profiling 证据。
-
-首期最需要的验证包括：计时确实等待设备完成；统计公式处理实际样本数和梯度累积；错误结果不会进入有效榜单；同设备不会重复分配；取消清理完整；控制面重启不丢运行记录；上传校验阻止不完整产物；profiling 开关不污染正式测量。现有合成 trace 适合解析器回归，不能用于证明硬件执行链路可用。
-
-**扩容时按出现的问题增加组件。** 当节点和用户增多时，再接入集群资源调度、对象存储、身份系统、时序监控及可选实验追踪。[MLflow Tracking](https://mlflow.org/docs/latest/ml/tracking/) 可作为指标/产物镜像，核心任务和协议记录仍只有一个事实来源。多卡调度需要一组设备同时分配以及失败清理；换成 Kubernetes 也不会自动解决模型/通信栈适配。若选用 Volcano，按实际芯片核对其设备插件和模式支持，正式 benchmark 默认整卡独占。[Volcano Ascend 指南](https://volcano.sh/docs/userguide/user_guide_how_to_use_vnpu/)
-
-GPU 低频资源遥测可评估 [DCGM](https://docs.nvidia.com/datacenter/dcgm/latest/learn/modules/profiling.html)，疑难 CPU/设备重叠问题可单独使用 [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/)。NPU 选择对应设备支持的采样接口。监控需记录采样粒度和开销，并协调 profiler 的计数器占用；利用率曲线只作上下文，不替代模型测量。
-
-实施前仍需确认实际 GPU/NPU 型号与数量、是否已有 Kubernetes/Slurm、首期最重要的模型、训练/推理优先级、可用数据及隔离要求。这些信息影响环境配方和排期，不影响“统一协议、分后端执行、共用分析、Web/Skill 共用 API”的总体结构。
+原调研可继续作为实现参考：[xpu-perf](https://github.com/bytedance/xpu-perf)、[MLPerf Training](https://github.com/mlcommons/training)、[TorchBench](https://github.com/pytorch/benchmark)、[MLCFlow](https://docs.mlcommons.org/mlcflow/)、[Ascend PyTorch 兼容性资料](https://github.com/Ascend/pytorch/blob/master/COMPATIBILITY.en.md)。这些参考不改变首期范围，也不构成实际环境支持或正式 MLPerf 成绩声明。

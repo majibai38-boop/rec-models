@@ -1,6 +1,6 @@
 # 设备盘点：节点配置、采集 Profile 与版本化快照
 
-这是 M0-01 的工具实现。使用 Python 3.10+ 标准库，在目标节点本地运行，不需要安装 PyTorch、CUDA、CANN 或额外 Python 包。软件包版本通过当前 Python 环境的 metadata 查询，不导入或初始化加速器运行时。
+这是已实现的设备盘点工具（原 M0-01，现由 P1-02 复用）。使用 Python 3.10+ 标准库，在目标节点本地运行，不需要安装 PyTorch、CUDA、CANN 或额外 Python 包。软件包版本通过当前 Python 环境的 metadata 查询，不导入或初始化加速器运行时。
 
 **支持范围：** Linux / Windows 主机，NVIDIA GPU、Linux 昇腾 NPU；可通过 profile 接入新的采集工具。首版提供 CLI 和离线多节点汇总，尚未接入 Web、SSH 自动分发、Agent 或模型 smoke test。
 
@@ -161,9 +161,9 @@ python -m benchmark_core.inventory summary --config fleet.json inventory-results
 python -m unittest discover -s benchmark_core/inventory/tests -v
 ```
 
-测试使用明确的合成命令输出，覆盖双后端、多芯片、未知值、配置扩展、命令参数、超时、输出限制、重复/缺失/过期快照和 CLI。开发环境另做 Windows 主机真实采集；Linux、NVIDIA、Ascend 的端到端真实采集仍需目标服务器验证，不能用测试夹具代替 M0-01 的节点验收。
+测试使用明确的合成命令输出，覆盖双后端、多芯片、未知值、配置扩展、命令参数、超时、输出限制、重复/缺失/过期快照和 CLI。开发环境另做 Windows 主机真实采集；Linux、NVIDIA、Ascend 的端到端真实采集仍需目标服务器验证，不能用测试夹具代替 P1-02 的节点验收。
 
-本模块不修改现有 Workload Modeler 数据库，不将其人工填写的峰值算力当成探测事实。后续运行 manifest 可引用快照路径/hash；环境兼容性和设备可运行性检查由 M0-03 / M1 单独实现。
+本模块将节点声明与探测事实分开保存，不将人工填写的峰值算力当成探测事实。后续运行 manifest 可引用快照路径/hash；环境兼容性和设备可运行性检查由 P1-02 / P1-03 单独实现。
 
 ## 一手参考
 
