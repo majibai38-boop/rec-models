@@ -1,0 +1,10 @@
+{
+  "schema_version": "recbench.workflow/v1",
+  "benchmark_spec": "../experiments/dlrm-small-pair.json",
+  "inventory_config": "../inventory/nodes.example.json",
+  "environment_recipe": "../environments/cuda.template.json",
+  "target_id": "gpu",
+  "execution": {"transport": "local"},
+  "archive": {"transport": "local", "host": "localhost", "root": null, "web_base_url": null},
+  "profile": {"enabled": false}
+}
