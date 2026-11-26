@@ -1,0 +1,43 @@
+{
+  "schema_version": "recbench.benchmark-spec/v1",
+  "name": "dlrm-small-portable-pair",
+  "workload": {
+    "id": "dlrm-small",
+    "source_sha256": null,
+    "implementation_track": "common-portable",
+    "mode": "train_step",
+    "execution": "eager",
+    "parameters": {
+      "embedding_dim": 64,
+      "table_sizes": [100000, 100000, 100000],
+      "pooling": "sum",
+      "dense_features": 13,
+      "bottom_mlp": [128, 64],
+      "top_mlp": [128, 64, 1],
+      "interaction": "dot",
+      "indices_per_table": 20,
+      "access_distribution": "uniform",
+      "seed": 2026,
+      "optimizer": {"name": "sgd", "learning_rate": 0.01, "momentum": 0.0}
+    }
+  },
+  "data": {"id": "synthetic-fixed-inputs-v1", "artifact_sha256": null, "kind": "synthetic"},
+  "initial_state": {"checkpoint_sha256": null, "training_state_sha256": null},
+  "targets": [
+    {"id": "gpu", "backend": "cuda", "environment": "cuda-portable", "node": "gpu-01", "inventory_profile": "nvidia", "device_id": "0", "devices": 1},
+    {"id": "npu", "backend": "ascend", "environment": "ascend-portable", "node": "npu-01", "inventory_profile": "ascend", "device_id": "0:0", "devices": 1}
+  ],
+  "matrix": {"batch_size": [256, 1024], "precision": ["fp32"]},
+  "measurement": {
+    "scope": "end_to_end",
+    "protocol": "fixed_steps",
+    "warmup_steps": 50,
+    "measure_steps": null,
+    "independent_repeats": 5,
+    "restore_state_before_each_repeat": true,
+    "profiler_enabled": false,
+    "sync_policy": "before_and_after_window",
+    "step_components": ["zero_grad", "forward", "loss", "backward", "optimizer_step"]
+  },
+  "correctness": {"policy_sha256": null}
+}

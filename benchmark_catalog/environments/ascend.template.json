@@ -1,0 +1,17 @@
+{
+  "schema_version": "recbench.environment-recipe/v1",
+  "id": "ascend-portable",
+  "backend": "ascend",
+  "state": "draft",
+  "image": null,
+  "runtime": {"python": null, "torch": null, "toolkit": null, "torch_npu": null},
+  "requirements": [
+    {"field": "host.os", "op": "eq", "value": "Linux"},
+    {"field": "device.vendor", "op": "eq", "value": "Ascend"}
+  ],
+  "compatibility": {
+    "sources": ["https://github.com/Ascend/pytorch/blob/master/COMPATIBILITY.en.md"],
+    "reviewed_on": null,
+    "rationale": "Draft only. Review Python/PyTorch/torch_npu/CANN as a combination with the target chip, OS, architecture, driver and firmware. Record exact versions and reviewed evidence before pinning; do not infer compatibility from a release number alone."
+  }
+}

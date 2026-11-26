@@ -1,0 +1,17 @@
+{
+  "schema_version": "recbench.environment-recipe/v1",
+  "id": "cuda-portable",
+  "backend": "cuda",
+  "state": "draft",
+  "image": null,
+  "runtime": {"python": null, "torch": null, "toolkit": null, "torch_npu": null},
+  "requirements": [
+    {"field": "host.os", "op": "eq", "value": "Linux"},
+    {"field": "device.vendor", "op": "eq", "value": "NVIDIA"}
+  ],
+  "compatibility": {
+    "sources": ["https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html"],
+    "reviewed_on": null,
+    "rationale": "Draft only. Select a real device, CPU architecture, immutable image and exact Python/PyTorch/CUDA versions; review their compatibility and record model/driver rules. A CUDA major-version driver table alone does not validate this workload."
+  }
+}
