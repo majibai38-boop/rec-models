@@ -1,6 +1,6 @@
 # Profiling Workbench：单机 Web 工作台
 
-**NPU 与 NPU 比较：** 在左侧新建任务时选「NPU ↔ NPU」，分别上传基线和对比采集的 `kernel_details.csv`。预检查后选各自的设备、Step（或明确选择完整采集）。结果页按累计耗时差列出前 100 类，显示仅单侧出现的类型、数量、平均及总体耗时。下载 Excel/JSON 查看所有类型和输入输出 shape、dtype 明细。此模式不需要 GPU/CPU trace，不做跨设备逐调用或 AI 关联。比值方向与 GPU/NPU 工作流不同，详见[计算口径与 CLI](../profiling_tools/README.md#对比两份-npu-采集)。
+**NPU 与 NPU 比较：** 在左侧新建任务时选「NPU ↔ NPU」，分别上传基线和对比采集的 `kernel_details.csv`。预检查后选各自的设备、Step（或明确选择完整采集）。总览显示两侧总耗时与 Cube/Vector/未知的耗时占比。类型表按算子和 Core Type 分组，可翻页查看全部类型；点「详细比较」查看对应的输入输出 shape/dtype。旧任务可复用输入重新分析。下载 Excel/JSON 查看所有类型和输入输出 shape、dtype 明细。此模式不需要 GPU/CPU trace，不做跨设备逐调用或 AI 关联。比值方向与 GPU/NPU 工作流不同，详见[计算口径与 CLI](../profiling_tools/README.md#对比两份-npu-采集)。
 
 复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，默认不调用外部 AI 服务。可选接入 [DeepSeek Harness / Codex 辅助分析](AI.md)，提供带证据的解释、关联建议及人工确认后的批量应用。AI 页面可选择发送本次选中 Step 的完整 Trace，并在后续追问中复用后端会话，避免重复附加文件。
 
@@ -348,7 +348,14 @@ profiling_web/.venv/Scripts/python -m workload_modeler --host 0.0.0.0 --port 877
 
 ## 精简下载菜单
 
-主入口保留对比Excel。「更多输出」仅列以下六项，不再罗列内部映射/诊断CSV：
+两种模式的结果顶部均提供「下载完整 Excel」「原始输入」「更多输出」。完整 Excel 不受表格筛选影响；「导出当前筛选 CSV」包括已应用筛选的所有页，最多 10 万行。
+
+- GPU/NPU：支持导出类型表、Shape 分组，以及「算子详情 → 详细比较 → 导出本组逐次记录 CSV」。需要 CLI `tables` 的默认严格调用评审表时，在「确认比较范围」勾选「额外生成严格调用评审 Excel」，完成后从「更多输出」下载。该表只读本次结果，不修改原有覆盖率；未勾选的历史任务可复用输入新建分析。
+- NPU/NPU：类型表可搜索算子或 Core Type，详情可搜索输入输出 Shape/dtype。支持按耗时差、两侧耗时或比值排序，两张表都可导出筛选 CSV；「更多输出」提供完整 JSON。「原始输入」分别按基线和对比角色取回，文件同名也不会混淆。
+
+需要 GPU/NPU 的「类型＋调用方聚合表」时，先完成同一组输入的全量分析，用「复用输入，新建分析」再选两侧 Step，在范围页选择对应全量任务。Worker 校验两份结果、输入指纹与 PID 后生成 Excel 和 Markdown，在「更多输出」下载。它是累计耗时对照，不是逐调用映射；无需重新上传。额外的跨版本基线与已审核旧表复验仍通过 CLI 执行。
+
+GPU/NPU 默认的「更多输出」仅列以下六项，不再罗列内部映射/诊断 CSV：
 
 | 文件 | 内容 |
 |---|---|

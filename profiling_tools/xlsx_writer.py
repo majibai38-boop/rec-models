@@ -154,6 +154,8 @@ def _worksheet_xml(
                     value /= 100
             elif fieldname.endswith("(us)"):
                 style = 6
+            elif fieldname == "耗时比(对比/基线)" and row.get("ratio_color"):
+                style = 9 if row["ratio_color"] == "green" else 10
             elif fieldname.endswith("Ratio(GPU/NPU)"):
                 style = 7
                 if isinstance(value, (int, float)) and not isinstance(value, bool):

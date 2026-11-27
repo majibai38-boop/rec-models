@@ -36,6 +36,16 @@ class NpuPairWebTest(unittest.TestCase):
                 result = client.get(base).json()
                 self.assertEqual(result["status"], "succeeded", result.get("error"))
                 self.assertEqual(result["summary"]["overall"]["耗时比(对比/基线)"],1.5)
+                self.assertEqual(result["summary"]["candidate"]["cv"]["Unknown"]["time_pct"], 100)
+                page = client.get(base+"/npu-pair-table").json()
+                self.assertEqual(page["total"], 1)
+                self.assertEqual(client.get(base+"/npu-pair-table",params={"search":"ad","sort":"candidate"}).json()["total"],1)
+                self.assertEqual(client.get(base+"/npu-pair-table",params={"search":"other","sort":"ratio"}).json()["total"],0)
+                self.assertEqual(client.get(base+"/npu-pair-table",params={"view":"signatures","op":"Add","search":"float32"}).json()["total"],0)
+                self.assertEqual(page["items"][0]["CV"], "Unknown")
+                params = {"view":"signatures", "op":"Add", "core":""}
+                self.assertEqual(client.get(base+"/npu-pair-table",params=params).json()["items"][0]["对比耗时(us)"],6)
+                self.assertFalse(client.get(base+"/npu-pair-table",params={**params,"offset":1}).json()["items"])
                 self.assertTrue(client.get(base+"/artifacts/npu_pair.xlsx").content.startswith(b"PK"))
                 for role, t in (("baseline_details", 4), ("candidate_details", 6)):
                     self.assertEqual(client.get(base+"/inputs/"+role).text,

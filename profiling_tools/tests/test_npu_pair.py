@@ -55,3 +55,19 @@ class PairTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "第 2 行"):
                 inspect_side(b, "对比")
         self.assertFalse((self.root/"bad").exists())
+
+    def test_core_scopes_colors_and_time_shares(self):
+        for side, durations in [('a',[10]*6), ('b',[20,21,11,12,50,40])]:
+            with (self.root/side).open('w',newline='',encoding='utf8') as f:
+                w=csv.writer(f)
+                w.writerow(('Type','Accelerator Core','aicore_time(us)','Duration(us)'))
+                for (op,core,counter),t in zip([('A','AI_CORE',1),('A','MIX_AIC',3),('V','AI_VECTOR_CORE',0),
+                          ('W','AI_CORE',0),('M','AI_CORE',0),('M','AI_CORE',None)], durations):
+                    w.writerow((op,core,counter,t))
+        report=compare_npus(self.root/'a',self.root/'b',self.root/'result',all_steps=True)
+        groups={(r['OP Type'],r['Core Type']): (r['CV'],r['ratio_color']) for r in report['types']}
+        self.assertEqual(groups,{('A','AI_CORE'):('Cube','yellow'),('A','MIX_AIC'):('Cube','green'),
+                        ('V','AI_VECTOR_CORE'):('Vector','yellow'),('W','AI_CORE'):('Vector','green'),
+                        ('M','AI_CORE'):('Mixed','yellow')})
+        self.assertEqual(report['baseline']['cv']['Vector']['time_pct'],50)
+        self.assertEqual(report['candidate']['cv']['Unknown']['time_us'],40)

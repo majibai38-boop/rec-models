@@ -49,8 +49,10 @@ def run(task_path):
                 else:
                     progress("reports")
                     report = compare_npus(**opts)
+                    from . import npu_pair_index
+                    npu_pair_index.build(attempt / "npu_pair.sqlite", report)
                     summary = {k: report[k] for k in ("overall", "baseline", "candidate")}
-                    summary.update(reports=list(REPORTS), types=report["types"][:100], type_count=len(report["types"]))
+                    summary.update(schema_version=report["schema_version"], reports=list(REPORTS), type_count=len(report["types"]))
                     result = {"status": "succeeded", "summary": summary}
             except ValueError as exc:
                 message = str(exc)
@@ -59,7 +61,10 @@ def run(task_path):
                 result = {"status": "failed", "error": message[:500]}
             write_json(attempt / "result.json", result)
             return 0 if result["status"] != "failed" else 1
-        config = CompareConfig(**task["config"])
+        config_args = dict(task["config"])
+        review = config_args.pop("export_call_tables", False)
+        aggregate = config_args.pop("aggregate_all_job", "")
+        config = CompareConfig(**config_args)
         if task["kind"] == "inspect":
             progress("inspection")
             report = inspect_inputs(config)
@@ -92,7 +97,28 @@ def run(task_path):
             build_index(config.output_dir, attempt / "index.sqlite")
             summary['timing_seconds']['index_build'] = round(time.perf_counter() - index_started, 6)
             write_json(Path(config.output_dir)/'summary.json', summary)
-            write_json(attempt / "result.json", {"status": "succeeded", "summary": public_summary(config.output_dir)})
+            public = public_summary(config.output_dir)
+            if review:
+                from profiling_tools.call_tables import export_tables
+                progress("call_review")
+                try:
+                    export_tables(config.output_dir, attempt / "call-review")
+                except (ValueError, OSError):
+                    traceback.print_exc()
+                    public["review_export_error"] = "严格调用评审表未生成；主报告仍可下载，原因见 Worker 日志。"
+                else:
+                    public["reports"].append("call_tables.xlsx")
+            if aggregate:
+                from .aggregate import export_pair
+                progress("aggregate")
+                try:
+                    export_pair(attempt, config.output_dir, aggregate)
+                except (ValueError, KeyError, OSError, ImportError):
+                    traceback.print_exc()
+                    public["aggregate_export_error"] = "聚合表未生成，请核对全量任务、PID、明细口径和服务依赖；主报告仍可下载。"
+                else:
+                    public["reports"].extend(["op_type_comparison.xlsx","op_type_comparison.md"])
+            write_json(attempt / "result.json", {"status": "succeeded", "summary": public})
     except InputSelectionError as exc:
         write_json(attempt / "result.json", {"status": "needs_selection", "error": "范围选择不完整，请检查 PID / step"})
     except Exception:

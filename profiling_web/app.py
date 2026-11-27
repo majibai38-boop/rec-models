@@ -63,6 +63,8 @@ class RunOptions(BaseModel):
     gpu_step: str = Field(default="", max_length=128)
     npu_step: str = Field(default="", max_length=128)
     all_steps: bool = False
+    export_call_tables: bool = False
+    aggregate_all_job: str = Field(default="", pattern="^([0-9a-f]{32})?$")
     include_communication: bool = False
     diagnostic_coverage_threshold: float = Field(default=90, ge=0, le=100, allow_inf_nan=False)
     flow_tolerance_us: float = Field(default=1000, ge=0, le=1000000, allow_inf_nan=False)
@@ -430,8 +432,31 @@ def create_app(settings=None):
     def inspect(job_id: str):
         return store.enqueue(job_id, "inspect")
 
+    @app.get("/api/jobs/{job_id}/aggregate-sources")
+    def aggregate_sources(job_id: str):
+        job = store.get(job_id)
+        if job["mode"] != "gpu_npu" or set(job["inputs"]) != set(job_inputs("gpu_npu")):
+            return {"items":[]}
+        keys = tuple(job_inputs("gpu_npu"))
+        with store.connect() as db:
+            rows = db.execute("SELECT id,name,inputs,options FROM jobs WHERE mode='gpu_npu' AND status='succeeded' ORDER BY updated DESC")
+            items = []
+            for r in rows:
+                if json.loads(r["options"] or "{}").get("all_steps"):
+                    inputs = json.loads(r["inputs"])
+                    if all(inputs.get(k,{}).get("sha256") == job["inputs"][k]["sha256"] for k in keys):
+                        items.append({"id":r["id"],"name":r["name"]})
+        return {"items":items}
+
     @app.post("/api/jobs/{job_id}/run", status_code=202)
     def run(job_id: str, options: RunOptions):
+        if options.aggregate_all_job:
+            current, other = store.get(job_id), store.get(options.aggregate_all_job)
+            def fingerprints(job):
+                return {k:v["sha256"] for k,v in job["inputs"].items()}
+            if (options.all_steps or other["mode"] != "gpu_npu" or other["status"] != "succeeded"
+                    or not (other["options"] or {}).get("all_steps") or fingerprints(current) != fingerprints(other)):
+                raise HTTPException(422, "请选择与本 Step 任务原始输入相同、已完成的 GPU/NPU 全量任务")
         return store.enqueue(job_id, "compare", options.model_dump())
 
     @app.post("/api/jobs/{job_id}/run-npu-pair", status_code=202)
@@ -600,6 +625,19 @@ def create_app(settings=None):
             raise HTTPException(404, '旧结果缺少 Step Trace，请复用输入重新分析')
         return FileResponse(path, media_type='application/json')
 
+    @app.get("/api/jobs/{job_id}/npu-pair-table")
+    def npu_pair_table(job_id: str, view: Literal["types", "signatures"] = "types", op: str = "", core: str = "",
+                       search: str = Query("", max_length=200), sort: Literal["difference","baseline","candidate","ratio"] = "difference",
+                       offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=200)):
+        from .npu_pair_index import page
+        job = store.get(job_id)
+        if job["mode"] != "npu_pair" or job["status"] != "succeeded":
+            raise HTTPException(409, "该任务没有已完成的 NPU 对比结果")
+        path = store.path(job_id) / "attempts" / job["attempt"] / "npu_pair.sqlite"
+        if not path.is_file():
+            raise HTTPException(409, "此结果缺少明细索引，请复用输入重新分析")
+        return page(path, view, op, core, offset, limit, search, sort)
+
     @app.get("/api/jobs/{job_id}/artifacts/{name}")
     def artifact(job_id: str, name: str):
         from profiling_tools.npu_pair import REPORTS
@@ -614,7 +652,9 @@ def create_app(settings=None):
         job, root = result_paths(job_id)
         if not downloadable(name) or name not in job["summary"]["reports"]:
             raise HTTPException(404, "文件不可下载")
-        path = root / "reports" / name
+        directory = {"call_tables.xlsx":"call-review", "op_type_comparison.xlsx":"aggregate",
+                     "op_type_comparison.md":"aggregate"}.get(name, "reports")
+        path = root / directory / name
         if not path.is_file() or path.is_symlink():
             raise HTTPException(404, "文件不存在")
         if path.suffix == ".csv":

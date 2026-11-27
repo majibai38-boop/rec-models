@@ -50,11 +50,11 @@ class WebTest(unittest.TestCase):
         state = self.store.get(job_id)
         self.assertEqual(state["status"], "needs_selection", state)
 
-    def complete(self):
+    def complete(self, **options):
         job_id = self.new()
         self.upload(job_id)
         self.inspect(job_id)
-        response = self.client.post(f"/api/jobs/{job_id}/run", json={"gpu_step": "1", "npu_step": "1"})
+        response = self.client.post(f"/api/jobs/{job_id}/run", json={"gpu_step": "1", "npu_step": "1", **options})
         self.assertEqual(response.status_code, 202, response.text)
         Worker(self.settings).execute(self.store.claim())
         state = self.store.get(job_id)
@@ -63,8 +63,34 @@ class WebTest(unittest.TestCase):
             self.fail(log.read_text(encoding="utf-8") + repr(state))
         return job_id
 
+    def test_optional_call_review_download(self):
+        job_id = self.complete(export_call_tables=True)
+        job_url = f"/api/jobs/{job_id}"
+        self.assertIn("call_tables.xlsx", self.client.get(job_url).json()["summary"]["reports"])
+        self.assertTrue(self.client.get(job_url+"/artifacts/call_tables.xlsx").content.startswith(b"PK"))
+
+    def test_export_aggregate_from_existing_full_job(self):
+        full = self.new()
+        self.upload(full)
+        self.inspect(full)
+        res = self.client.post(f"/api/jobs/{full}/run", json={"all_steps":True})
+        self.assertEqual(res.status_code,202,res.text)
+        Worker(self.settings).execute(self.store.claim())
+        base = "/api/jobs/"+self.client.post(f"/api/jobs/{full}/clone").json()["id"]
+        Worker(self.settings).execute(self.store.claim())
+        self.assertEqual(self.client.get(base+"/aggregate-sources").json()["items"][0]["id"],full)
+        self.assertEqual(self.client.post(base+"/run",json={"all_steps":True,"aggregate_all_job":full}).status_code,422)
+        res = self.client.post(base+"/run",json={"gpu_step":"1","npu_step":"1","aggregate_all_job":full})
+        self.assertEqual(res.status_code,202,res.text)
+        Worker(self.settings).execute(self.store.claim())
+        self.assertTrue(self.client.get(base+"/artifacts/op_type_comparison.xlsx").content.startswith(b"PK"))
+        report = self.client.get(base+"/artifacts/op_type_comparison.md")
+        self.assertEqual(report.status_code,200)
+        self.assertNotIn(str(self.root),report.text)
+
     def test_end_to_end_upload_inspect_compare_query_download(self):
         job_id = self.complete()
+        self.assertEqual(self.client.get(f"/api/jobs/{job_id}/artifacts/call_tables.xlsx").status_code,404)
         job = self.client.get(f"/api/jobs/{job_id}").json()
         self.assertEqual(job["summary"]["status"], "complete_with_gaps")
         self.assertEqual(job["summary"]["overall_statistics"][0]["total_time_ratio_gpu_npu"], 1.25)

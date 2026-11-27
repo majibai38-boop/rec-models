@@ -3,6 +3,10 @@
 !web_shared/theme.css
 !profiling_tools/
 !profiling_tools/*.py
+!skills/
+!skills/gpu-npu-profiling/
+!skills/gpu-npu-profiling/scripts/
+!skills/gpu-npu-profiling/scripts/build_op_type_comparison.py
 !profiling_web/
 !profiling_web/*.py
 !profiling_web/requirements.lock.txt

@@ -10,7 +10,7 @@ python -m profiling_tools compare-npu --baseline-details before/kernel_details.c
 
 两侧 Step 号可以不同。比较完整采集时，用 `--all-steps` **替换**两个 Step 参数。指定 Step 会排除没有 Step ID 的行；CSV 完全没有 Step 标记时必须选全量。若含多个设备，用 `--baseline-device 7 --candidate-device 0` 分别选一个。输出到新目录或空目录。
 
-打开 `npu_pair.xlsx`：先看「类型对比」（按累计耗时差的绝对值排序），再看「整体」和「Shape与精度」（类型、Core、输入输出 shape/dtype 的原始字段分组）。`npu_pair.json` 包含相同的完整统计和两侧范围。无 shape/dtype 表示未采集，不能认定对应调用相同。只出现在一端的类型单列，无独立比值；基线耗时为零也不计算比值。
+打开 `npu_pair.xlsx`：先看「类型对比」（按累计耗时差的绝对值排序），类型按 OP Type + Core Type 分组。两侧 Cube/Vector 均按实测 aicore_time 分类，缺测不算 Vector。有效耗时比仅 Cube > 2.0、Vector > 1.1 标绿，其余浅黄；无比值留空。再看「整体」、「Cube-Vector总览」和「Shape与精度」（类型、Core、输入输出 shape/dtype 的原始字段分组）。`npu_pair.json` 包含相同的完整统计和两侧范围。无 shape/dtype 表示未采集，不能认定对应调用相同。只出现在一端的类型单列，无独立比值；基线耗时为零也不计算比值。
 
 差值 = 对比 − 基线；耗时比 = 对比 / 基线。例如 1.20 表示对比侧累计耗时增加 20%。结合 kernel 数量和平均耗时判断是调用变多还是同类 kernel 变慢。两边都以明细 Duration(us) 计时，包含明细中出现的任务；非逐调用对齐，也不是多 stream 的墙钟耗时。
 
