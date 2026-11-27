@@ -15,14 +15,20 @@ const url=computed(()=>{
 function filter(){search.value=draft.value.trim(); page.value=0}
 async function download(){
   exporting.value=true;error.value=''
+  // 流水 is a two-bar cell, not a value; its numbers live in the workbook and JSON.
+  const fields = columns.value.filter(c => c !== FLOW)
   try {await exportCsv(props.api,url.value,props.job.id.slice(0,8)+(props.scope?'-shapes':'-types')+'.csv',
-    {columns:columns.value,scope:{attempt:props.job.attempt,op:props.scope?.['OP Type'],core:props.scope?.['Core Type'],search:search.value,sort:sort.value}})}
+    {columns:fields,scope:{attempt:props.job.attempt,op:props.scope?.['OP Type'],core:props.scope?.['Core Type'],search:search.value,sort:sort.value}})}
   catch(e){error.value=e.message}finally{exporting.value=false}
 }
 const extra = ['名称','输入 Shape','输入 dtype','输出 Shape','输出 dtype']
+// One column for both sides, as the GPU/NPU type table shows the NPU pipeline in one column.
+const FLOW = '流水'
+const flowText = data => (data?.categories || []).map(c => `${c.label} ${c.time_pct == null ? '—' : c.time_pct.toFixed(1) + '%'}`).join('，')
+const flowTitle = r => `基线：${flowText(r['基线流水']) || '未采集'}\n对比：${flowText(r['对比流水']) || '未采集'}`
 // Recoloured in the browser so the thresholds can be edited without re-running the analysis.
 const cellColor = r => colorOf(r['性能比(基线/对比)'], r.CV, props.thresholds)
-const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'状态','基线数量','对比数量','基线耗时(us)','对比耗时(us)','性能比(基线/对比)'])
+const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'状态','基线数量','对比数量','基线耗时(us)','对比耗时(us)','性能比(基线/对比)',...(props.scope ? [] : [FLOW])])
 const display = v => typeof v==='number' ? v.toLocaleString(undefined,{maximumFractionDigits:4}) : (v || '—')
 // Key the fetch on primitives only: replacing the parent job object with an equal one must
 // not trigger a refetch, which would empty the table and move the page scroll.
@@ -56,12 +62,30 @@ watch(()=>props.focus, value=>{
   <p v-else-if="!total" class="muted">没有符合当前筛选的记录。</p>
   <div v-else class="table-scroll"><table><thead><tr><th v-if="!scope">操作</th><th v-for="c in columns" :key="c">{{ c }}</th></tr></thead>
     <tbody><tr v-for="(r,i) in rows" :key="i"><td v-if="!scope"><button @click="$emit('details',r)">详细比较</button></td>
-      <td v-for="c in columns" :key="c" :class="c==='性能比(基线/对比)' ? cellColor(r) : ''">{{ display(r[c]) }}</td></tr></tbody></table></div>
+      <td v-for="c in columns" :key="c" :class="c==='性能比(基线/对比)' ? cellColor(r) : (c===FLOW ? 'flow-cell' : '')" :title="c===FLOW ? flowTitle(r) : null">
+        <template v-if="c===FLOW">
+          <div v-for="side in [['基','基线流水'],['对','对比流水']]" :key="side[1]" class="flow-row">
+            <small>{{ side[0] }}</small>
+            <span v-if="r[side[1]]?.categories?.length" class="flow-bar">
+              <i v-for="seg in r[side[1]].categories" :key="seg.category" :class="'pipe-'+seg.category" :style="{width:(seg.time_pct||0)+'%'}"/>
+            </span>
+            <span v-else class="muted">—</span>
+          </div>
+        </template>
+        <template v-else>{{ display(r[c]) }}</template>
+      </td></tr></tbody></table></div>
   <div class="pagination"><span>共 {{ total }} 组 · 第 {{ page+1 }} 页</span><button :disabled="loading || !page" @click="page--">上一页</button><button :disabled="loading || (page+1)*limit>=total" @click="page++">下一页</button></div>
   </div>
 </template>
 <style scoped>
 td,th{white-space:nowrap}
+.flow-cell{min-width:158px}
+.flow-row{display:flex;align-items:center;gap:5px;line-height:14px}
+.flow-row small{width:11px;color:#61756e;font-size:9px}
+.flow-bar{display:inline-flex;width:126px;height:8px;background:#edf0f2;border-radius:3px;overflow:hidden}
+.flow-bar i{height:100%}
+.pipe-compute{background:#487cbd}.pipe-memory{background:#249787}.pipe-scalar{background:#9972b5}
+.pipe-mixed{background:#cb8a3d}.pipe-no_bound{background:#b5a54f}.pipe-unknown{background:#969da8}
 .dark-green{background:#197746;color:#fff;font-weight:600}
 .green{background:#dcefd9;color:#26533a;font-weight:600}
 .yellow{background:#fff0b5;color:#6f5a12}

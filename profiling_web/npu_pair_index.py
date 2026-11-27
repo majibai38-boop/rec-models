@@ -24,19 +24,24 @@ def pipeline_rows(report):
 def build(path, report):
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE items(view TEXT, seq INTEGER, op TEXT, core TEXT, data TEXT, PRIMARY KEY(view,seq))")
+        # The type table shows the pipeline mix as columns, as the GPU/NPU workbench does, so
+        # each type row carries both sides' summaries instead of a separate view.
+        flows = {(row["OP Type"], row["Core Type"]): row for row in pipeline_rows(report)}
         for view in ("types", "signatures"):
+            items = []
+            for row in report[view]:
+                flow = flows.get((row["OP Type"], row["Core Type"]))
+                if view == "types" and flow:
+                    row = {**row, "基线流水": flow["基线"], "对比流水": flow["对比"]}
+                items.append(row)
             db.executemany("INSERT INTO items VALUES(?,?,?,?,?)", (
                 (view, i, r["OP Type"], r["Core Type"], json.dumps(r, ensure_ascii=False))
-                for i, r in enumerate(report[view])))
-        db.executemany("INSERT INTO items VALUES(?,?,?,?,?)", (
-            ("pipeline", i, r["OP Type"], r["Core Type"], json.dumps(r, ensure_ascii=False))
-            for i, r in enumerate(pipeline_rows(report))))
+                for i, r in enumerate(items)))
         db.execute("CREATE INDEX scope ON items(view,op,core,seq)")
 
 
 SEARCH_FIELDS = {
     "types": ["op", "core"],
-    "pipeline": ["op", "core"],
     "signatures": [
         """json_extract(data,'$."名称"')""",
         """json_extract(data,'$."输入 Shape"')""", """json_extract(data,'$."输出 Shape"')""",
@@ -47,10 +52,6 @@ ORDER = {
     "baseline": """json_extract(data,'$."基线耗时(us)"') DESC, seq""",
     "candidate": """json_extract(data,'$."对比耗时(us)"') DESC, seq""",
     "ratio": """json_extract(data,'$."性能比(基线/对比)"') DESC, seq""",
-}
-PIPELINE_ORDER = {
-    "baseline": """json_extract(data,'$."基线"."time_us"') DESC, seq""",
-    "candidate": """json_extract(data,'$."对比"."time_us"') DESC, seq""",
 }
 
 
@@ -63,10 +64,7 @@ def page(path, view, op, core, offset, limit, search="", sort="difference"):
         fields = SEARCH_FIELDS[view]
         where += " AND ("+" OR ".join("instr(lower("+f+"),lower(?))>0" for f in fields)+")"
         args.extend([search]*len(fields))
-    if view == "pipeline":
-        order = PIPELINE_ORDER["baseline" if sort == "baseline" else "candidate"]
-    else:
-        order = ORDER[sort]
+    order = ORDER[sort]
     with closing(sqlite3.connect(path.as_uri()+"?mode=ro", uri=True)) as db:
         total, = db.execute("SELECT COUNT(*) FROM items WHERE "+where, args).fetchone()
         rows = db.execute("SELECT data FROM items WHERE "+where+" ORDER BY "+order+" LIMIT ? OFFSET ?", [*args, limit, offset])

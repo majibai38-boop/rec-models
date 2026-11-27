@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import NpuPairTable from './NpuPairTable.vue'
-import NpuPairPipelineTable from './NpuPairPipelineTable.vue'
 import NpuPairDetailCharts from './NpuPairDetailCharts.vue'
 import ReportDownloads from './ReportDownloads.vue'
 const props = defineProps({ job: Object, busy: Boolean, api:Function })
@@ -138,11 +137,6 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
       <h2>结论</h2>
       <ul class="conclusions"><li v-for="(c,i) in summary.conclusions" :key="i"><strong>{{ c.kind }}</strong><span>{{ c.text }}</span></li></ul>
     </template>
-    <template v-if="summary.pipeline">
-      <h2>NPU 流水初筛 · 按算子</h2>
-      <p class="muted">按每个 kernel 的 PipeUtilization 归类后汇总到 OP Type + Core Type；类别耗时互斥，无法分类的时间一并计入 Unknown 分母。仅为瓶颈候选，不是 Roofline 饱和结论。</p>
-      <NpuPairPipelineTable :job="job" :api="api"/>
-    </template>
     <template v-if="summary.schema_version>=2">
       <div class="tabs" role="tablist" aria-label="NPU 比较视图">
         <button role="tab" :aria-selected="!detail" :class="{active:!detail}" @click="hideDetailView">类型对比</button>
@@ -156,7 +150,7 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
         <a class="button below-export" :href="belowHref" :title="belowTitle">↓ 导出未达标算子</a>
         <span class="ratio-legend"><i class="dark-green">≥ 1.5× 阈值</i><i class="green">≥ 阈值</i><i class="yellow">≥ 0.5× 阈值</i><i class="dark-yellow">&lt; 0.5× 阈值</i></span>
       </div>
-      <p class="muted small">阈值为性能比（基线 / 对比）的达标线：绿色代表达到或超过，黄色代表未达标；Mixed / Unknown 不套用阈值。表内配色随输入实时计算，Excel 使用分析时的阈值。</p>
+      <p class="muted small">阈值为性能比（基线 / 对比）的达标线：绿色代表达到或超过，黄色代表未达标；Mixed / Unknown 不套用阈值。表内配色随输入实时计算，Excel 使用分析时的阈值。「流水」列上下两条依次是基线与对比侧，按每个 kernel 的 PipeUtilization 归类汇总（类别互斥，Unknown 计入分母），悬停可看占比；只是瓶颈候选，不是 Roofline 结论，导出 CSV 不含该列。</p>
       <h2 ref="detailHeading">{{ detail ? '详细比较 · '+detail['OP Type']+' / '+(detail['Core Type']||'未标记') : '类型对比' }}</h2>
       <button v-if="detail" @click="hideDetailView">← 返回类型对比</button>
       <NpuPairTable v-show="!detail" :job="job" :api="api" :thresholds="thresholds" @details="showDetailView($event)"/>
