@@ -2,6 +2,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import NpuPairTable from './NpuPairTable.vue'
 import NpuPairPipelineTable from './NpuPairPipelineTable.vue'
+import NpuPairDetailCharts from './NpuPairDetailCharts.vue'
 import ReportDownloads from './ReportDownloads.vue'
 const props = defineProps({ job: Object, busy: Boolean, api:Function })
 defineEmits(['run'])
@@ -149,6 +150,7 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
       <h2 ref="detailHeading">{{ detail ? '详细比较 · '+detail['OP Type']+' / '+(detail['Core Type']||'未标记') : '类型对比' }}</h2>
       <button v-if="detail" @click="hideDetailView">← 返回类型对比</button>
       <NpuPairTable v-show="!detail" :job="job" :api="api" :thresholds="thresholds" @details="showDetailView($event)"/>
+      <NpuPairDetailCharts v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds"/>
       <NpuPairTable v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds"/>
     </template>
     <template v-else><h2>类型对比（历史结果）</h2><p class="notice">此结果没有 CV 和详细比较索引，可复用输入重新分析。</p>
