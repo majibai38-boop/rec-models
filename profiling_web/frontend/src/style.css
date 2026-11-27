@@ -42,6 +42,9 @@
 .empty-modes button b{font-size:13px;font-weight:650;color:#1a5c50}
 .empty-modes button small{font-size:11px;color:#7d9089;font-weight:400}
 .empty-modes button:hover:not(:disabled){background:#eef7f3;border-color:#a9cdbe;box-shadow:0 3px 10px #12302a14}
+.share-row{display:flex;align-items:center;gap:8px;margin:6px 0 0;font-size:12px;color:var(--ui-muted);min-width:0}
+.share-row input{flex:1 1 160px;min-width:0;width:auto;padding:6px 9px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.share-row button{flex:0 0 auto;font-size:11px;padding:6px 10px}
 .empty{text-align:center;padding:80px 20px}
 .empty p{color:#85948f;line-height:1.9}
 .empty-symbol{font-size:38px;color:#4b8c7c;margin-bottom:20px}

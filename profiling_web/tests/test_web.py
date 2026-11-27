@@ -63,6 +63,26 @@ class WebTest(unittest.TestCase):
             self.fail(log.read_text(encoding="utf-8") + repr(state))
         return job_id
 
+    def test_short_link_redirects_to_the_long_view(self):
+        job_id = self.new()
+        created = self.client.post("/api/short-links", json={"job": job_id, "view": '{"tab":"coverage"}'})
+        self.assertEqual(created.status_code, 201, created.text)
+        path = created.json()["path"]
+        self.assertRegex(path, r"^/s/[A-Za-z0-9_-]{6,}$")
+        again = self.client.post("/api/short-links", json={"job": job_id, "view": '{"tab":"coverage"}'})
+        self.assertEqual(again.json()["path"], path)   # the same view reuses one link
+        page = self.client.get(path, follow_redirects=False)
+        self.assertEqual(page.status_code, 302)
+        self.assertIn(f"job={job_id}", page.headers["location"])
+        self.assertIn("view=", page.headers["location"])
+        self.assertEqual(self.client.get("/s/does-not-exist", follow_redirects=False).status_code, 404)
+        self.assertEqual(self.client.post("/api/short-links",
+                                          json={"job": job_id, "view": "x" * 6001}).status_code, 422)
+        self.assertEqual(self.client.post("/api/short-links",
+                                          json={"job": "not-a-job", "view": ""}).status_code, 422)
+        self.assertEqual(self.client.post("/api/short-links",
+                                          json={"job": "0" * 32, "view": ""}).status_code, 404)
+
     def test_optional_call_review_download(self):
         job_id = self.complete(export_call_tables=True)
         job_url = f"/api/jobs/{job_id}"

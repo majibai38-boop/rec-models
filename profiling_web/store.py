@@ -2,6 +2,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import time
 import uuid
@@ -33,6 +34,10 @@ class Store:
                 db.execute("ALTER TABLE jobs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
             if "manual" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN manual TEXT NOT NULL DEFAULT '{}'")
+            # Shareable short links: the view state lives here, so the URL stays 8 characters wide.
+            db.execute("""CREATE TABLE IF NOT EXISTS short_links (
+                id TEXT PRIMARY KEY, job TEXT NOT NULL, view TEXT NOT NULL, created REAL NOT NULL)""")
+            db.execute("CREATE INDEX IF NOT EXISTS short_links_job ON short_links(job)")
 
     @contextmanager
     def connect(self):
@@ -189,6 +194,32 @@ class Store:
             else:
                 raise Conflict("只有排队或运行中的任务可以取消")
         return self.get(job_id)
+
+    def create_short_link(self, job_id, view):
+        """Store a view snapshot behind a short id so the shared URL stays small."""
+        self.path(job_id)
+        with self.connect() as db:
+            row = db.execute("SELECT id FROM short_links WHERE job=? AND view=?", (job_id, view)).fetchone()
+            if row is not None:
+                return row[0]
+            for _ in range(5):
+                link_id = secrets.token_urlsafe(6)
+                try:
+                    db.execute("INSERT INTO short_links(id,job,view,created) VALUES(?,?,?,?)",
+                               (link_id, job_id, view, time.time()))
+                    return link_id
+                except sqlite3.IntegrityError:
+                    continue
+        raise Conflict("短链接生成失败，请重试")
+
+    def short_link(self, link_id):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{4,32}", link_id):
+            raise KeyError(link_id)
+        with self.connect() as db:
+            row = db.execute("SELECT job, view FROM short_links WHERE id=?", (link_id,)).fetchone()
+        if row is None:
+            raise KeyError(link_id)
+        return dict(row)
 
     def recover(self):
         with self.connect() as db:

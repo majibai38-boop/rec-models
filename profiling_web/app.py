@@ -15,10 +15,10 @@ import sqlite3
 import time
 import uuid
 from typing import Literal
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -54,6 +54,13 @@ class JobEdit(BaseModel):
         if self.name is not None:
             self.name = JobRequest.clean_name(self.name)
         return self
+
+
+class ShortLinkRequest(BaseModel):
+    """A view snapshot to store behind a short id; the client bounds it to 6000 characters."""
+    model_config = ConfigDict(extra="forbid")
+    job: str = Field(pattern=r"^[0-9a-f]{32}$")
+    view: str = Field(default="", max_length=6000)
 
 
 class RunOptions(BaseModel):
@@ -369,7 +376,15 @@ def create_app(settings=None):
                     await asyncio.to_thread(shutil.rmtree, target)
                 db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
                 db.execute('DELETE FROM ai_runs WHERE job_id=?', (job_id,))
+                db.execute('DELETE FROM short_links WHERE job=?', (job_id,))
             return {"deleted": job_id}
+
+    @app.post("/api/short-links", status_code=201)
+    def create_short_link(payload: ShortLinkRequest):
+        """Keep the long view state on the server so shared links stay short."""
+        store.get(payload.job)
+        link_id = store.create_short_link(payload.job, payload.view)
+        return {"id": link_id, "path": f"/s/{link_id}"}
 
     @app.get("/api/jobs/{job_id}/inputs/{role}")
     def original_input(job_id: str, role: str):
@@ -701,6 +716,15 @@ def create_app(settings=None):
     static = Path(__file__).parent / "frontend" / "dist"
     if (static / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")
+
+    @app.get("/s/{link_id}")
+    def short_link(link_id: str):
+        """Public redirect: the target page still enforces authentication itself."""
+        try:
+            row = store.short_link(link_id)
+        except KeyError:
+            raise HTTPException(404, "短链接不存在或已失效") from None
+        return RedirectResponse("/?" + urlencode({"job": row["job"], "view": row["view"]}), status_code=302)
 
     @app.get("/")
     def index():

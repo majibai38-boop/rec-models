@@ -46,7 +46,7 @@ function openAI(row={}) {aiScope.value=row;tab.value='ai';writeLocation(true)}
 function openManual(row) {manualSeed.value=null;manualType.value=row}
 function aiAssociate(value) {manualType.value=value.type;manualSeed.value=value.seed;}
 const operatorState = ref(cleanView().operator)
-watch(()=>job.value?.id,()=>{aiScope.value=null;manualType.value=null;manualSeed.value=null})
+watch(()=>job.value?.id,()=>{aiScope.value=null;manualType.value=null;manualSeed.value=null;shareLink.value='';shareCopied.value=false})
 function manualSubmitted(next) {job.value=next;manualType.value=null;manualSeed.value=null;chartCache.clear();action(refresh)}
 function manualUpgrade() {manualType.value=null;cloneJob()}
 let restoring = false, lastRefresh = 0
@@ -65,6 +65,31 @@ function deleteView() { if(savedViewIndex.value==='') return; savedViews.value.s
 async function renameJob() { await action(async()=>{ job.value=await api('/jobs/'+job.value.id,'PATCH',{name:editedName.value.trim()}); editingName.value=false; await refresh() }) }
 async function archiveJob() { await action(async()=>{ job.value=await api('/jobs/'+job.value.id,'PATCH',{archived:!job.value.archived}); await refresh() }) }
 async function cloneJob() { await action(async()=>{ const j=await api('/jobs/'+job.value.id+'/clone','POST'); jobArchived.value=false; jobSearch.value=''; jobPage.value=0; await refresh(); await select(j.id) }) }
+// The view state is large; keep it on the server and share an 8-character link instead.
+const shareLink = ref(''), shareCopied = ref(false), sharing = ref(false)
+async function shareCurrentView() {
+  if (!job.value || sharing.value) return
+  sharing.value = true
+  error.value = ''
+  try {
+    const result = await api('/short-links', 'POST', { job: job.value.id, view: JSON.stringify(snapshot()) })
+    shareLink.value = location.origin + result.path
+    await nextTick()
+    await copyShare()
+  } catch (e) { error.value = e.message } finally { sharing.value = false }
+}
+async function copyShare() {
+  if (!shareLink.value) return
+  let copied = false
+  try { await navigator.clipboard.writeText(shareLink.value); copied = true } catch {}
+  if (!copied) {
+    // Plain-HTTP LAN access is not a secure context, so select the field for a manual copy.
+    const field = document.querySelector('input[aria-label="分享短链接"]')
+    if (field) { field.select(); try { copied = document.execCommand('copy') } catch {} }
+  }
+  shareCopied.value = copied
+  setTimeout(() => { shareCopied.value = false }, 4000)
+}
 async function showService() { await action(async()=>{service.value=service.value ? null : await api('/health')}) }
 async function findJobs() {jobPage.value=0;await action(refresh)}
 async function clearFilters() {search.value='';hotspot.value=false;scope.value=null;page.value=0;recordPage.value=0;await action(loadResults)}
@@ -261,7 +286,7 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
   <div v-if="!logged" class="login-page"><section class="login-card"><div class="brand-mark">P<span>↗</span></div><p class="eyebrow">LOCAL ANALYSIS WORKSPACE</p><h1>Profiling Workbench</h1><p class="muted">把 GPU 与 NPU 的性能差异，追溯到每一次调用。</p><form @submit.prevent="login"><label>访问令牌<input v-model="token" type="password" autocomplete="current-password" placeholder="粘贴服务器访问令牌" required></label><button class="primary" :disabled="busy">进入工作台 →</button></form><p class="muted small">令牌位于服务器数据目录的 access-token 文件，或由管理员提供。此版本是单机共享工作区。</p><p v-if="error" class="error">{{ error }}</p></section></div>
   <div v-else class="app-shell">
     <aside class="workbench-sidebar"><div class="brand"><div class="brand-mark">P<span>↗</span></div><div>Profiling<span>WORKBENCH</span></div></div><div class="workspace-label">单机 · 共享工作区</div><button class="new-compare" :disabled="busy" @click="openCreate"><span>＋</span>新建比较</button><div class="section-label">任务 <span>{{ jobTotal }}</span></div><input v-model="jobSearch" placeholder="搜索任务名" aria-label="搜索任务名" @keyup.enter="findJobs"><div class="task-filters"><select v-model="jobStatus" @change="findJobs" aria-label="任务状态"><option value="">全部状态</option><option v-for="s in ['succeeded','running','queued','failed','needs_selection','interrupted','cancelled','uploading']" :key="s" :value="s">{{ labels[s] }}</option></select><label class="check"><input type="checkbox" v-model="jobArchived" @change="findJobs">归档</label><button @click="findJobs">搜索</button></div><nav class="task-list" aria-label="分析任务"><button v-for="j in jobs" :key="j.id" :class="['job-link', { selected: job?.id === j.id }]" @click="action(() => select(j.id))" :disabled="busy"><span class="job-name">{{ j.name }}</span><span class="job-status"><i :class="j.status"></i>{{ labels[j.status] }} · {{ new Date(j.created * 1000).toLocaleDateString() }}</span></button></nav><div class="pagination"><button :disabled="jobPage===0 || busy" @click="jobPage--;action(refresh)">上一页</button><span>{{ jobPage+1 }}</span><button :disabled="(jobPage+1)*30>=jobTotal || busy" @click="jobPage++;action(refresh)">下一页</button></div><footer><span :class="['worker-dot', { online: config.worker_online }]"></span>{{ config.worker_online ? 'Worker 在线 · 并发 1' : 'Worker 离线，请检查服务' }}<button class="text-button" v-if="config.auth_mode === 'token'" @click="logout">退出</button><span v-else>{{ config.auth_mode==='none'?'共享工作区 · 免令牌':'本机免令牌' }}</span></footer></aside>
-    <main class="workbench-main"><header class="workbench-header"><div><p class="eyebrow">GPU / ASCEND NPU</p><form v-if="editingName" class="rename-form" @submit.prevent="renameJob"><input v-model="editedName" aria-label="任务名称" maxlength="120" required><button class="primary" :disabled="busy || !editedName.trim()">保存</button><button type="button" @click="editingName=false">取消</button></form><h1 v-else>{{ job?.name || '性能差异，从证据开始' }} <button v-if="job" class="text-button" @click="editedName=job.name;editingName=true">修改名称</button></h1><p class="muted">{{ job ? '任务 ' + job.id.slice(0, 8) + ' · ' + (labels[job.status] || job.status) : '上传两端采集数据，生成可追溯的对齐结果与覆盖率分析。' }}</p></div><span class="privacy">● Profiling 本地处理 · AI 按需启用</span></header>
+    <main class="workbench-main"><header class="workbench-header"><div><p class="eyebrow">GPU / ASCEND NPU</p><form v-if="editingName" class="rename-form" @submit.prevent="renameJob"><input v-model="editedName" aria-label="任务名称" maxlength="120" required><button class="primary" :disabled="busy || !editedName.trim()">保存</button><button type="button" @click="editingName=false">取消</button></form><h1 v-else>{{ job?.name || '性能差异，从证据开始' }} <button v-if="job" class="text-button" @click="editedName=job.name;editingName=true">修改名称</button> <button v-if="job" class="text-button" :disabled="sharing" @click="shareCurrentView">{{ sharing ? '生成中…' : '分享链接' }}</button></h1><p class="muted">{{ job ? '任务 ' + job.id.slice(0, 8) + ' · ' + (labels[job.status] || job.status) : '上传两端采集数据，生成可追溯的对齐结果与覆盖率分析。' }}</p><p v-if="shareLink" class="share-row"><span>短链接</span><input :value="shareLink" readonly aria-label="分享短链接" @focus="$event.target.select()"><button type="button" @click="copyShare">{{ shareCopied ? '已复制' : '复制' }}</button><button type="button" class="text-button" @click="shareLink=''">收起</button></p></div><span class="privacy">● Profiling 本地处理 · AI 按需启用</span></header>
       <div class="service-toolbar"><button @click="showService">服务状态</button><span>{{ config.auth_mode==='token'?'令牌认证 · 共享工作区':config.auth_mode==='none'?'免令牌 · 共享工作区':'本机免令牌访问' }}</span></div><section v-if="service" class="panel"><h2>服务状态</h2><p>Worker {{ service.worker_online?'在线':'离线' }} · 排队 {{ service.tasks.queued || 0 }} · 运行 {{ service.tasks.running || 0 }}</p><p>存储 {{ filesize(service.storage_used_bytes) }} / {{ filesize(service.storage_bytes) }} · 内存软限制 {{ service.memory_mb }} MiB · 超时 {{ service.timeout_seconds }} 秒</p><p class="muted">状态为打开时快照。内存上限不是当前内存用量。</p></section><div v-if="error" class="error banner" role="alert">{{ error }}<button @click="error = ''" aria-label="关闭错误">×</button></div>
       <section v-if="!job" class="empty panel"><div class="empty-symbol">↗</div><h2>创建第一组性能比较</h2><p>GPU ↔ NPU 需要两侧 trace 和 NPU 明细；NPU ↔ NPU 只需两份 kernel_details.csv。</p><div class="empty-modes"><button @click="startNew('gpu_npu')"><b>GPU ↔ NPU</b><small>双侧实测 · 3 份输入</small></button><button @click="startNew('npu_pair')"><b>NPU ↔ NPU</b><small>前后对比 · 2 份明细</small></button></div><div class="steps"><span>01 选类型</span><span>02 上传数据</span><span>03 确认范围</span><span>04 分析与查证</span></div></section>
       <template v-else>
