@@ -277,7 +277,9 @@ watch(job,()=>{if(!job.value){history.replaceState({},'',location.pathname);trai
 onMounted(async () => {
   try { await refresh(); logged.value=true; await restoreLocation() } catch(e) { if(logged.value)error.value=e.message }
   window.addEventListener('popstate',onPopState)
-  timer = setInterval(async () => { if (!logged.value || loading || busy.value || document.hidden || (!active.value && Date.now()-lastRefresh<30000)) return; loading = true; try { await refresh(); if (job.value) { const before = job.value.status; const id = job.value.id; const next = await api('/jobs/' + id); if (job.value?.id === id) { job.value = next; elapsed.value = next.started ? Math.round((Date.now() / 1000 - next.started)) : 0; if (before !== next.status) { if (next.status === 'succeeded') await loadResults(); if (next.status === 'needs_selection') for (const side of ['gpu', 'npu']) if (candidates(side).length === 1) options[side + '_pid'] = candidates(side)[0].pid } } } } catch(e) { error.value = e.message } finally { loading = false } }, 2500)
+  timer = setInterval(async () => { if (!logged.value || loading || busy.value || document.hidden || (!active.value && Date.now()-lastRefresh<30000)) return; loading = true; try { await refresh(); if (job.value) { const before = job.value.status; const id = job.value.id; const next = await api('/jobs/' + id); if (job.value?.id === id) { // Replacing an unchanged job object re-renders every child and makes the
+          // result tables refetch, which collapses the page and throws the scroll away.
+          if (JSON.stringify(next) !== JSON.stringify(job.value)) job.value = next; elapsed.value = next.started ? Math.round((Date.now() / 1000 - next.started)) : 0; if (before !== next.status) { if (next.status === 'succeeded') await loadResults(); if (next.status === 'needs_selection') for (const side of ['gpu', 'npu']) if (candidates(side).length === 1) options[side + '_pid'] = candidates(side)[0].pid } } } } catch(e) { error.value = e.message } finally { loading = false } }, 2500)
 })
 onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstate',onPopState) })
 </script>

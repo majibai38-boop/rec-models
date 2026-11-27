@@ -33,10 +33,14 @@ function colorOf(r) {
 }
 const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'状态','基线数量','对比数量','基线耗时(us)','对比耗时(us)','性能比(基线/对比)'])
 const display = v => typeof v==='number' ? v.toLocaleString(undefined,{maximumFractionDigits:4}) : (v || '—')
-watch(()=>[url.value,props.job.attempt,page.value,retry.value], async (_,__,cleanup)=>{
+// Key the fetch on primitives only: replacing the parent job object with an equal one must
+// not trigger a refetch, which would empty the table and move the page scroll.
+let lastJob = ''
+watch(()=>`${props.job.id}|${props.job.attempt}|${page.value}|${retry.value}|${url.value}`, async (_,__,cleanup)=>{
   let current = true
   cleanup(()=>{current=false})
-  rows.value=[]; error.value=''; loading.value=true
+  if (props.job.id !== lastJob) { rows.value=[]; total.value=0; lastJob=props.job.id }  // never show another job's rows
+  error.value=''; loading.value=true
   try {
     const result=await props.api(url.value+'&offset='+page.value*limit+'&limit='+limit)
     if(current){rows.value=result.items; total.value=result.total}
@@ -51,7 +55,7 @@ watch(()=>[url.value,props.job.attempt,page.value,retry.value], async (_,__,clea
     <button>筛选</button><button type="button" :disabled="exporting || loading || !total" @click="download">{{ exporting?'正在导出…':'导出当前筛选 CSV' }}</button>
   </form>
   <p v-if="error" role="alert">{{ error }} <button @click="retry++">重试</button></p>
-  <p v-else-if="loading">正在读取比较结果…</p>
+  <p v-else-if="loading && !rows.length">正在读取比较结果…</p>
   <p v-else-if="!total" class="muted">没有符合当前筛选的记录。</p>
   <div v-else class="table-scroll"><table><thead><tr><th v-if="!scope">操作</th><th v-for="c in columns" :key="c">{{ c }}</th></tr></thead>
     <tbody><tr v-for="(r,i) in rows" :key="i"><td v-if="!scope"><button @click="$emit('details',r)">详细比较</button></td>

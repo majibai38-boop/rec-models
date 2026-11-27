@@ -8,10 +8,13 @@ const search = ref(''), draft = ref(''), sort = ref('candidate')
 const url = computed(()=>'/jobs/'+props.job.id+'/npu-pair-table?'+
   new URLSearchParams({view:'pipeline', search:search.value, sort:sort.value}))
 function filter(){search.value=draft.value.trim(); page.value=0}
-watch(()=>[url.value, props.job.attempt, page.value, retry.value], async (_,__,cleanup)=>{
+// Primitives only: an equal-but-replaced parent job must not refetch and collapse the table.
+let lastJob = ''
+watch(()=>`${props.job.id}|${props.job.attempt}|${page.value}|${retry.value}|${url.value}`, async (_,__,cleanup)=>{
   let current = true
   cleanup(()=>{current=false})
-  rows.value=[]; error.value=''; loading.value=true
+  if (props.job.id !== lastJob) { rows.value=[]; total.value=0; lastJob=props.job.id }
+  error.value=''; loading.value=true
   try {
     const result = await props.api(url.value+'&offset='+page.value*limit+'&limit='+limit)
     if(current){rows.value=result.items; total.value=result.total}
@@ -25,7 +28,7 @@ watch(()=>[url.value, props.job.attempt, page.value, retry.value], async (_,__,c
     <button>筛选</button>
   </form>
   <p v-if="error" role="alert">{{ error }} <button @click="retry++">重试</button></p>
-  <p v-else-if="loading">正在读取算子流水…</p>
+  <p v-else-if="loading && !rows.length">正在读取算子流水…</p>
   <p v-else-if="!total" class="muted">此结果没有可显示的算子流水。</p>
   <div v-else class="table-scroll"><table><thead><tr><th>OP Type</th><th>Core Type</th><th>基线 · 流水构成</th><th>对比侧 · 流水构成</th></tr></thead>
     <tbody><tr v-for="(r,i) in rows" :key="i"><td>{{ r['OP Type'] }}</td><td>{{ r['Core Type'] || '未标记' }}</td>
