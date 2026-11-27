@@ -108,9 +108,12 @@ function recordParams() {
     ...(calls?{search:callSearch.value,sort:callSort.value,...(callStatus.value?{comparison_status:callStatus.value}:{})}:tab.value==='coverage'?{search:search.value,...(hotspot.value?{coverage_max:90,npu_ratio_min:1}:{})}:{})}
 }
 const aggregateSources = ref([])
-watch(()=>[job.value?.id,job.value?.status], async ([id,status],_,cleanup)=>{
+// A primitive key: an array getter returns a fresh array every run, so Vue sees a change
+// even when nothing did. The callback reads the current values instead of destructuring.
+watch(()=>`${job.value?.id || ''}|${job.value?.status || ''}`, async (_,__,cleanup)=>{
+  const id = job.value?.id, status = job.value?.status
   let current=true;cleanup(()=>{current=false});aggregateSources.value=[]
-  if (!isPair.value && status==='needs_selection') {
+  if (id && !isPair.value && status==='needs_selection') {
     try {const r=await api('/jobs/'+id+'/aggregate-sources');if(current)aggregateSources.value=r.items}
     catch(e){if(current)error.value=e.message}
   }

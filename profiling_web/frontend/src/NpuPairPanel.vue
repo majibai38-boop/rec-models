@@ -68,7 +68,9 @@ watch(thresholds, () => {
 })
 // Adopt the job's thresholds once per job; re-fetching the same job must not overwrite edits.
 let adoptedJob = null
-watch(() => [props.job.id, summary.value?.thresholds], ([id, t]) => {
+// Primitive key for the same reason as the tables: an array getter always looks changed.
+watch(() => `${props.job.id}|${summary.value?.thresholds?.cube ?? ''}|${summary.value?.thresholds?.vector ?? ''}`, () => {
+  const id = props.job.id, t = summary.value?.thresholds
   if (id === adoptedJob || !t) return
   if (Number(t.cube) > 0 && Number(t.vector) > 0) {
     thresholds.cube = Number(t.cube); thresholds.vector = Number(t.vector); adoptedJob = id
