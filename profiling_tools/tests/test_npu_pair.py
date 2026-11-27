@@ -154,8 +154,10 @@ class PairTest(unittest.TestCase):
     def test_missing_counter_falls_back_to_the_core_type(self):
         header = ('Step Id', 'Type', 'Accelerator Core', 'Duration(us)')
         sides = {
-            'a': [(1, 'MatMul', 'AI_CORE', 60), (1, 'Add', 'AI_VECTOR_CORE', 30), (1, 'Mix', 'MIX_AIC', 10)],
-            'b': [(1, 'MatMul', 'AI_CORE', 30), (1, 'Add', 'AI_VECTOR_CORE', 60), (1, 'Mix', 'MIX_AIC', 10)],
+            'a': [(1, 'MatMul', 'AI_CORE', 60), (1, 'Add', 'AI_VECTOR_CORE', 30),
+                  (1, 'MixC', 'MIX_AIC', 10), (1, 'MixV', 'MIX_AIV', 20), (1, 'Mix', 'MIX', 5)],
+            'b': [(1, 'MatMul', 'AI_CORE', 30), (1, 'Add', 'AI_VECTOR_CORE', 60),
+                  (1, 'MixC', 'MIX_AIC', 10), (1, 'MixV', 'MIX_AIV', 20), (1, 'Mix', 'MIX', 5)],
         }
         for side, rows in sides.items():
             with (self.root/side).open('w', newline='', encoding='utf8') as handle:
@@ -165,13 +167,15 @@ class PairTest(unittest.TestCase):
         report = compare_npus(self.root/'a', self.root/'b', self.root/'result', baseline_step='1', candidate_step='1')
         self.assertEqual(report['baseline']['cv_source'], 'core')
         self.assertEqual(report['candidate']['cv_source'], 'core')
-        self.assertIn('AI_CORE', report['baseline']['cv_rule'])
+        self.assertIn('MIX_AIC', report['baseline']['cv_rule'])
         cv = report['baseline']['cv']
+        # MIX_AIC counts as Cube and MIX_AIV as Vector; only a bare MIX has no primary unit.
         self.assertEqual({name: value['count'] for name, value in cv.items()},
-                         {'Cube': 1, 'Vector': 1, 'Mixed': 1, 'Unknown': 0})
-        self.assertEqual(cv['Cube']['time_us'], 60)
+                         {'Cube': 2, 'Vector': 2, 'Mixed': 1, 'Unknown': 0})
+        self.assertEqual(cv['Cube']['time_us'], 70)
+        self.assertEqual(cv['Vector']['time_us'], 50)
         self.assertEqual({row['OP Type']: row['CV'] for row in report['types']},
-                         {'MatMul': 'Cube', 'Add': 'Vector', 'Mix': 'Mixed'})
+                         {'MatMul': 'Cube', 'Add': 'Vector', 'MixC': 'Cube', 'MixV': 'Vector', 'Mix': 'Mixed'})
         structure = {item['kind']: item['text'] for item in report['conclusions']}['结构']
         self.assertIn('Accelerator Core 估计', structure)
 

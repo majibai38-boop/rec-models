@@ -49,7 +49,7 @@ const classes = {Cube:'Cube',Vector:'Vector',Mixed:'混合核',Unknown:'未知'}
 const cvNote = computed(() => {
   const estimated = Object.entries(sides).filter(([key]) => summary.value?.[key]?.cv_source === 'core').map(([, label]) => label)
   if (!estimated.length) return 'CV 按 aicore_time 判定：正值为 Cube、零为 Vector，其余未知。'
-  const detail = '按 Accelerator Core 估计（AI_CORE → Cube、AI_VECTOR_CORE → Vector、MIX → Mixed）'
+  const detail = '按 Accelerator Core 估计（AI_CORE / MIX_AIC → Cube，AI_VECTOR_CORE / MIX_AIV → Vector，MIX → Mixed）'
   return estimated.length === 2 ? `两侧都没有 aicore_time 计数，Cube/Vector ${detail}。`
     : `${estimated.join('、')}没有 aicore_time 计数，该侧 Cube/Vector ${detail}。`
 })
