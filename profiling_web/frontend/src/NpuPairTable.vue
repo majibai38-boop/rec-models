@@ -28,7 +28,7 @@ const flowText = data => (data?.categories || []).map(c => `${c.label} ${c.time_
 const flowTitle = r => `基线：${flowText(r['基线流水']) || '未采集'}\n对比：${flowText(r['对比流水']) || '未采集'}`
 // Recoloured in the browser so the thresholds can be edited without re-running the analysis.
 const cellColor = r => colorOf(r['性能比(基线/对比)'], r.CV, props.thresholds)
-const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'状态','基线数量','对比数量','基线耗时(us)','对比耗时(us)','性能比(基线/对比)',...(props.scope ? [] : [FLOW])])
+const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'基线数量','对比数量','基线耗时(us)','对比耗时(us)','性能比(基线/对比)',...(props.scope ? [] : [FLOW])])
 const display = v => typeof v==='number' ? v.toLocaleString(undefined,{maximumFractionDigits:4}) : (v || '—')
 // Key the fetch on primitives only: replacing the parent job object with an equal one must
 // not trigger a refetch, which would empty the table and move the page scroll.

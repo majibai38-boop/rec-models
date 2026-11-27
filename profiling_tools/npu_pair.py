@@ -18,14 +18,13 @@ from .provenance import write_json
 from .xlsx_writer import TableSheet, write_grouped_workbook_xlsx
 
 REPORTS = ("npu_pair.xlsx", "npu_pair.json")
-METRICS = ("基线数量", "对比数量", "基线耗时(us)", "对比耗时(us)", "性能比(基线/对比)", "状态")
+METRICS = ("基线数量", "对比数量", "基线耗时(us)", "对比耗时(us)", "性能比(基线/对比)")
 SIGNATURE = ("OP Type", "Core Type", "输入 Shape", "输入 dtype", "输出 Shape", "输出 dtype")
 # 名称 is not part of the grouping key: kernel names may vary inside one shape group, so the
 # sheet shows the dominant one instead of splitting the group.
 SHAPE_COLUMNS = ("OP Type", "名称", "Core Type", "输入 Shape", "输入 dtype", "输出 Shape", "输出 dtype")
-BELOW_COLUMNS = ("OP Type", "名称", "Core Type", "CV", "性能比(基线/对比)", "阈值",
-                 "基线耗时(us)", "对比耗时(us)", "差值(us)", "变化(%)",
-                 "基线数量", "对比数量", "状态",
+BELOW_COLUMNS = ("OP Type", "名称", "Core Type", "CV", "对比数量", "基线数量",
+                 "对比耗时(us)", "基线耗时(us)", "性能比(基线/对比)", "阈值",
                  "输入 Shape", "输入 dtype", "输出 Shape", "输出 dtype")
 PIPELINE_OVERVIEW = ("侧", "流水类别", "标签", "次数", "耗时(us)", "耗时占比(%)", "下一步检查")
 PIPELINE_TYPE = ("侧", "OP Type", "Core Type", "流水类别", "标签", "次数", "耗时(us)", "该类型内占比(%)")

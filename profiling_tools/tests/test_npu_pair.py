@@ -256,6 +256,10 @@ class PairTest(unittest.TestCase):
         with zipfile.ZipFile(standalone) as archive:
             sheet = archive.read('xl/worksheets/sheet1.xml').decode()
         self.assertIn('k_vec_bad', sheet)
-        self.assertIn('<c r="E2" s="18"', sheet)   # dark-yellow ratio cell
-        self.assertIn('<c r="E3" s="10"', sheet)   # yellow ratio cell
+        self.assertIn('<c r="I2" s="18"', sheet)   # dark-yellow ratio cell
+        self.assertIn('<c r="I3" s="10"', sheet)   # yellow ratio cell
+        # 对比在前、基线在后，阈值紧跟性能比，差值/变化/状态不再导出。
+        self.assertNotIn('差值(us)', sheet)
+        self.assertNotIn('变化(%)', sheet)
+        self.assertNotIn('状态', sheet)
         self.assertIn('vec_bad-in', sheet)
