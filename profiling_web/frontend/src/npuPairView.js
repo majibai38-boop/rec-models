@@ -16,13 +16,18 @@ export function colorOf(ratio, cv, thresholds) {
 }
 
 // Element count of one input tensor from "32,64;64,128" / "FLOAT16;FLOAT16".
+// Tolerates the wrappers profilers print ("torch.Size([32, 64])") and a trailing comma; a
+// dynamic or unknown dimension (-1, ?, 0) cannot be turned into an element count.
 export function numelOf(shapes, dtypes, index = 0) {
   const parts = String(shapes || '').split(';')
-  const shape = (parts[index] ?? parts[0] ?? '').trim()
+  const raw = String(parts[index] ?? parts[0] ?? '').trim()
   const dtype = String(String(dtypes || '').split(';')[index] ?? '').trim().toLowerCase()
-  if (!shape || ['none', 'scalar', 'tensorlist'].includes(dtype)) return null
-  const dims = shape.split(',').map(part => Number(part.trim()))
-  if (!dims.length || dims.some(value => !Number.isSafeInteger(value) || value < 0)) return null
+  if (!raw || ['none', 'scalar', 'tensorlist'].includes(dtype)) return null
+  const cleaned = raw.replace(/torch\.size/gi, '').replace(/[\[\](){}]/g, '')
+  const pieces = cleaned.split(',').map(piece => piece.trim()).filter(Boolean)
+  if (!pieces.length) return null
+  const dims = pieces.map(Number)
+  if (dims.some(value => !Number.isSafeInteger(value) || value < 1)) return null
   const total = dims.reduce((a, b) => a * b, 1)
   return Number.isSafeInteger(total) ? total : null
 }

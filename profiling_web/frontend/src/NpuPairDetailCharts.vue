@@ -73,9 +73,13 @@ const limit = computed(() => {
   const cv = props.scope?.CV, values = props.thresholds
   return cv === 'Cube' ? values?.cube : cv === 'Vector' ? values?.vector : null
 })
-const plotted = computed(() => rows.value
+// Three ways the scatter can end up empty, reported separately: no shapes collected, shapes
+// that cannot yield an element count, or a Y metric with no values.
+const shapeRows = computed(() => rows.value.filter(row => String(row['输入 Shape'] || '').trim()))
+const measured = computed(() => rows.value
   .map(row => ({ row, x: numelOf(row['输入 Shape'], row['输入 dtype'], inputIndex.value) }))
-  .filter(item => item.x != null && item.row[metric.value.field] != null))
+  .filter(item => item.x != null))
+const plotted = computed(() => measured.value.filter(item => item.row[metric.value.field] != null))
 
 const scatter = computed(() => ({
   tooltip: {
@@ -139,9 +143,13 @@ function pick(params) { const row = params?.data?.payload; if (row) emit('select
         </div>
         <Chart :option="scatter" @select="pick"/>
       </section>
-      <p v-else class="muted">此类型的 shape 不足以画输入规模图。</p>
+      <p v-else class="muted">
+        <template v-if="!shapeRows.length">此结果的明细没有输入 Shape（CSV 缺 `Input Shapes` 列或该列为空），无法按输入规模作图；补采后重新分析即可。</template>
+        <template v-else-if="!measured.length">此类型的 {{ shapeRows.length }} 个 shape 都算不出元素数（含动态维度 -1、未知符号或非法值），无法按输入规模作图。</template>
+        <template v-else>当前 Y 轴指标在这 {{ measured.length }} 个 shape 上都没有数值，换一个 Y 轴指标或检查两侧采集范围。</template>
+      </p>
     </div>
-    <p class="muted small">按对比耗时取当前类型的前 {{ Math.min(total, 200) }} 个 shape 分组{{ total > 200 ? '（共 ' + total + ' 个）' : '' }}；气泡大小为对比耗时{{ yMetric === 'ratio' ? '，虚线是该类型的性能阈值与 1.0' : '' }}。点柱子或气泡会把下方表格筛到该 shape，便于逐项查证。</p>
+    <p class="muted small">按对比耗时取当前类型的前 {{ Math.min(total, 200) }} 个 shape 分组{{ total > 200 ? '（共 ' + total + ' 个）' : '' }}；气泡大小为对比耗时{{ yMetric === 'ratio' ? '，虚线是该类型的性能阈值与 1.0' : '' }}。<template v-if="shapeRows.length > plotted.length">有 {{ shapeRows.length - plotted.length }} 个 shape 因缺少可解析的输入 shape 或指标未进入散点图。</template>点柱子或气泡会把下方表格筛到该 shape，便于逐项查证。</p>
   </template>
 </template>
 <style scoped>
