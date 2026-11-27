@@ -127,19 +127,25 @@ def classify(detail):
     return answer
 
 
+def summarize_buckets(buckets):
+    """Aggregate {category: [count, time_us]} that a caller already accumulated."""
+    categories = [{'category': k, 'label': v, 'count': buckets.get(k, (0, 0.0))[0],
+                   'time_us': buckets.get(k, (0, 0.0))[1]} for k, v in LABELS.items()]
+    total = math.fsum(b['time_us'] for b in categories)
+    for b in categories:
+        b['time_pct'] = 100 * b['time_us'] / total if total > 0 else None
+    return {'count': sum(b['count'] for b in categories), 'time_us': total,
+            'categories': [b for b in categories if b['count']]}
+
+
 def summarize(kernels):
     """Partition by per-kernel classification, using duration sums, not ratios."""
-    buckets = {k: {'category': k, 'label': v, 'count': 0, 'time_us': 0.0} for k, v in LABELS.items()}
+    buckets = defaultdict(lambda: [0, 0.0])
     for kernel in kernels:
-        kind = kernel.get('pipeline', {}).get('category', 'unknown')
-        bucket = buckets[kind]
-        bucket['count'] += 1
-        bucket['time_us'] += kernel['time_us']
-    total = sum(b['time_us'] for b in buckets.values())
-    for b in buckets.values():
-        b['time_pct'] = 100 * b['time_us'] / total if total > 0 else None
-    return {'count': sum(b['count'] for b in buckets.values()), 'time_us': total,
-            'categories': [b for b in buckets.values() if b['count']]}
+        bucket = buckets[kernel.get('pipeline', {}).get('category', 'unknown')]
+        bucket[0] += 1
+        bucket[1] += kernel['time_us']
+    return summarize_buckets(buckets)
 
 
 def build_pipeline_report(npu, rows):

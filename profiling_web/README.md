@@ -1,6 +1,6 @@
 # Profiling Workbench：单机 Web 工作台
 
-**NPU 与 NPU 比较：** 在左侧新建任务时选「NPU ↔ NPU」，分别上传基线和对比采集的 `kernel_details.csv`。预检查后选各自的设备、Step（或明确选择完整采集）。总览显示两侧总耗时与 Cube/Vector/未知的耗时占比。类型表按算子和 Core Type 分组，可翻页查看全部类型；点「详细比较」查看对应的输入输出 shape/dtype。旧任务可复用输入重新分析。下载 Excel/JSON 查看所有类型和输入输出 shape、dtype 明细。此模式不需要 GPU/CPU trace，不做跨设备逐调用或 AI 关联。比值方向与 GPU/NPU 工作流不同，详见[计算口径与 CLI](../profiling_tools/README.md#对比两份-npu-采集)。
+**NPU 与 NPU 比较：** 点左侧「新建比较」，在弹窗中选择「NPU ↔ NPU」后分别上传基线和对比采集的 `kernel_details.csv`。预检查后选各自的设备、Step（或明确选择完整采集）。总览显示两侧总耗时、Cube/Vector/未知的耗时占比、两侧的 NPU 流水初筛和由同一批数字生成的结论。类型表按算子和 Core Type 分组，性能比按 Cube / Vector 阈值分四档着色，阈值可在页面直接修改（默认 2.0 / 1.1），可翻页查看全部类型；点「↓ 未达标算子 Excel」按当前阈值一键导出未达标列表（含名称与输入输出 shape/dtype）。点「详细比较」查看对应的输入输出 shape/dtype。旧任务可复用输入重新分析。下载 Excel/JSON 查看结论、流水、所有类型和输入输出 shape、dtype 明细。此模式不需要 GPU/CPU trace，不做跨设备逐调用或 AI 关联。比值方向与 GPU/NPU 工作流不同：本模式的「性能比 = 基线耗时 / 对比耗时」是耗时的反比，大于 1 表示对比侧更快，详见[计算口径与 CLI](../profiling_tools/README.md#对比两份-npu-采集)。
 
 复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，默认不调用外部 AI 服务。可选接入 [DeepSeek Harness / Codex 辅助分析](AI.md)，提供带证据的解释、关联建议及人工确认后的批量应用。AI 页面可选择发送本次选中 Step 的完整 Trace，并在后续追问中复用后端会话，避免重复附加文件。
 
@@ -48,7 +48,7 @@ profiling_web/.venv/Scripts/python -m profiling_web all --port 8000 --data-dir p
 
 ## 使用流程
 
-1. 新建任务，上传 GPU trace JSON、NPU trace JSON 和 NPU `kernel_details.csv`。这版要求三者齐全，不接受压缩包或服务器任意路径。
+1. 在左侧「新建比较」中选「GPU ↔ NPU」并创建任务，然后上传 GPU trace JSON、NPU trace JSON 和 NPU `kernel_details.csv`。这版要求三者齐全，不接受压缩包或服务器任意路径。
 2. 预检查后明确选择两端 CPU PID、稳定 step，或显式勾选完整采集。相同 step 编号不保证输入、精度和工作量等价。
 3. 提交分析。页面显示队列/阶段状态，刷新不丢任务；可取消运行。
 4. 在六个页签查看类型对比、算子详情、整体对比、覆盖率诊断、调用明细和耗时分布，默认打开类型对比。类型表可跳转 shape/dtype 详情或关联的整体分组，再下钻到事件；大结果按页查询。

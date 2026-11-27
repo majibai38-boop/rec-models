@@ -94,6 +94,9 @@ class NpuPairOptions(BaseModel):
     baseline_step: str = Field(default="", max_length=128)
     candidate_step: str = Field(default="", max_length=128)
     all_steps: bool = False
+    # Defaults mirror profiling_tools.npu_pair.DEFAULT_*_THRESHOLD.
+    cube_threshold: float = Field(default=2.0, gt=0, lt=1000)
+    vector_threshold: float = Field(default=1.1, gt=0, lt=1000)
 
     @model_validator(mode="after")
     def scope(self):
@@ -637,6 +640,31 @@ def create_app(settings=None):
         if not path.is_file():
             raise HTTPException(409, "此结果缺少明细索引，请复用输入重新分析")
         return page(path, view, op, core, offset, limit, search, sort)
+
+    @app.get("/api/jobs/{job_id}/npu-pair/below-threshold.xlsx")
+    def below_threshold_workbook(job_id: str, cube: float = Query(2.0, gt=0, lt=1000),
+                                 vector: float = Query(1.1, gt=0, lt=1000)):
+        """Regenerate the below-threshold list for the thresholds currently shown in the UI."""
+        from profiling_tools.npu_pair import (below_threshold, validate_thresholds,
+                                              write_below_threshold_xlsx)
+        job = store.get(job_id)
+        if job["mode"] != "npu_pair" or job["status"] != "succeeded":
+            raise HTTPException(409, "该任务没有已完成的 NPU 对比结果")
+        reports = store.path(job_id) / "attempts" / job["attempt"] / "reports"
+        report_path = reports / "npu_pair.json"
+        if not report_path.is_file():
+            raise HTTPException(409, "此结果缺少对比报告，请复用输入重新分析")
+        try:
+            limits = validate_thresholds(cube, vector)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        target = reports / f"npu_pair_below_threshold_{limits['cube']:g}_{limits['vector']:g}.xlsx"
+        if not target.is_file():
+            rows = below_threshold(json.loads(report_path.read_text(encoding="utf-8"))["signatures"], limits)
+            temporary = reports / f".below_threshold_{uuid.uuid4().hex}.xlsx"
+            write_below_threshold_xlsx(temporary, rows)
+            temporary.replace(target)
+        return FileResponse(target, filename="npu_pair_below_threshold.xlsx")
 
     @app.get("/api/jobs/{job_id}/artifacts/{name}")
     def artifact(job_id: str, name: str):

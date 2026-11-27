@@ -10,9 +10,17 @@ python -m profiling_tools compare-npu --baseline-details before/kernel_details.c
 
 两侧 Step 号可以不同。比较完整采集时，用 `--all-steps` **替换**两个 Step 参数。指定 Step 会排除没有 Step ID 的行；CSV 完全没有 Step 标记时必须选全量。若含多个设备，用 `--baseline-device 7 --candidate-device 0` 分别选一个。输出到新目录或空目录。
 
-打开 `npu_pair.xlsx`：先看「类型对比」（按累计耗时差的绝对值排序），类型按 OP Type + Core Type 分组。两侧 Cube/Vector 均按实测 aicore_time 分类，缺测不算 Vector。有效耗时比仅 Cube > 2.0、Vector > 1.1 标绿，其余浅黄；无比值留空。再看「整体」、「Cube-Vector总览」和「Shape与精度」（类型、Core、输入输出 shape/dtype 的原始字段分组）。`npu_pair.json` 包含相同的完整统计和两侧范围。无 shape/dtype 表示未采集，不能认定对应调用相同。只出现在一端的类型单列，无独立比值；基线耗时为零也不计算比值。
+打开 `npu_pair.xlsx`：先看「结论」读总体判断，再进「类型对比」（按累计耗时差的绝对值排序），类型按 OP Type + Core Type 分组。两侧 Cube/Vector 均按实测 aicore_time 分类，缺测不算 Vector。性能比按 Cube 和 Vector 两个阈值分四档着色：`≥ 阈值×1.5` 深绿、`≥ 阈值` 绿、`≥ 阈值×0.5` 浅黄、`< 阈值×0.5` 深黄；Mixed / Unknown 不套用阈值、不着色，无比值留空。再看「未达标算子」、「整体」、「流水总览」、「流水-类型」、「Cube-Vector总览」和「Shape与精度」（类型、Core、名称、输入输出 shape/dtype 的原始字段分组）。`npu_pair.json` 包含相同的完整统计、两侧范围和本次阈值。无 shape/dtype 表示未采集，不能认定对应调用相同。只出现在一端的类型单列，无独立比值；任一侧耗时为 0 也不计算比值。
 
-差值 = 对比 − 基线；耗时比 = 对比 / 基线。例如 1.20 表示对比侧累计耗时增加 20%。结合 kernel 数量和平均耗时判断是调用变多还是同类 kernel 变慢。两边都以明细 Duration(us) 计时，包含明细中出现的任务；非逐调用对齐，也不是多 stream 的墙钟耗时。
+「未达标算子」把性能比低于本类阈值的 shape 分组单列成表，按性能比从低到高排序，含 OP Type、名称、Core Type、基线/对比耗时、差值、性能比（同四档着色）、该行阈值和输入输出 shape/dtype，便于直接派单。Web 结果页顶部有「↓ 未达标算子 Excel」一键导出，按**页面上当前填写的阈值**在服务端重新生成，因此和屏幕上的配色一致；单元格值来自分析时的报告，不重新解析 trace。名称取该 shape 分组内出现次数最多的 kernel 名称，内核名不参与分组，避免同类调用因命名单调而拆散。
+
+阈值是性能比（基线 / 对比）的达标线，默认 **Cube 2.0、Vector 1.1**——这是常见的迁移验收口径，不是硬件规格，应按自己的采集环境调整。Web 工作台在「选择比较范围」和结果页都能直接填写，改动随运行请求写入报告；命令行用 `--cube-threshold` / `--vector-threshold` 指定。报告 `npu_pair.json` 的 `thresholds` 记录本次使用的数值、band（0.5）和着色规则，Excel 按同一组阈值着色。
+
+差值 = 对比 − 基线；性能比 = 基线 / 对比，即耗时的反比（大于 1 表示对比侧更快）。例如 1.20 表示对比侧耗时降到基线的约 83%、性能高 20%，`变化(%)` 为 20；0.80 表示对比侧慢 25%，`变化(%)` 为 -20。结合 kernel 数量和平均耗时判断是调用变多还是同类 kernel 变慢。两边都以明细 Duration(us) 计时，包含明细中出现的任务；非逐调用对齐，也不是多 stream 的墙钟耗时。
+
+「结论」页签只重排同一批数字，不引入额外测量：总体性能比与方向、可比类型数量（变快/变慢/持平）、按耗时差绝对值排序的主要差异类型、单侧类型的覆盖面、Cube/Vector/Unknown 占比变化，以及两侧的流水主导类别。Web 的 NPU 对比总览和 CLI 输出给出相同的结论行，CLI 在 `overall` JSON 之后逐行打印。
+
+「流水总览」用 `kernel_details.csv` 里的 PipeUtilization 字段把每个 kernel 归为计算/搬运/Scalar/多流水/No Bound/Unknown 六类候选，两侧各给次数、耗时与占比；「流水-类型」给出每个 OP Type + Core Type 内部构成的流水类别。类别互斥、不可相加，Unknown 计入分母但单独列出；Unknown 占比高表示该侧没有可用流水计数或核类型不支持初筛，此时不输出瓶颈判断。这只是候选，不是 Roofline 饱和结论，也不替代补采计数器。
 
 浏览器上传、任务队列、可视化和报告下载，见 [单机 Web 工作台部署指南](../profiling_web/README.md)。原 CLI 和 Skill 接口保持不变。
 

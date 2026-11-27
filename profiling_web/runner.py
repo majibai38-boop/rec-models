@@ -51,7 +51,11 @@ def run(task_path):
                     report = compare_npus(**opts)
                     from . import npu_pair_index
                     npu_pair_index.build(attempt / "npu_pair.sqlite", report)
-                    summary = {k: report[k] for k in ("overall", "baseline", "candidate")}
+                    # Per-type pipeline rows stay in the downloadable reports; the job summary keeps
+                    # only what the workbench renders so large jobs do not inflate every API response.
+                    summary = {k: report[k] for k in ("overall", "baseline", "candidate", "conclusions", "thresholds")}
+                    summary["pipeline"] = {k: report["pipeline"][k] for k in
+                                           ("method", "threshold", "dominance_margin", "note")}
                     summary.update(schema_version=report["schema_version"], reports=list(REPORTS), type_count=len(report["types"]))
                     result = {"status": "succeeded", "summary": summary}
             except ValueError as exc:

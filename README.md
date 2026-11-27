@@ -132,7 +132,7 @@ workload_modeler/.venv/bin/python -m workload_modeler --port 8770
 
 ### 完成第一次 Profiling 比较
 
-1. **新建任务**：填写能区分模型与采集条件的名称。
+1. **新建比较**：点左侧「新建比较」，在弹窗中选 GPU ↔ NPU 或 NPU ↔ NPU，并填写能区分模型与采集条件的名称。两种比较的输入与口径不同，创建后不能切换。
 2. **上传数据**：GPU trace JSON、NPU trace JSON、对应的 NPU `kernel_details.csv`。`op_statistic.csv` 不能替代 kernel 明细。
 3. **确认范围**：预检查后选择两端 CPU PID 与稳定 Step；确认 Batch、Shape、精度和设备范围一致。相同 Step 编号不代表工作量等价。
 4. **分析与查证**：先看类型对比，再进入算子详情、整体对比与覆盖率诊断。不要为了让覆盖率变高而强行关联。

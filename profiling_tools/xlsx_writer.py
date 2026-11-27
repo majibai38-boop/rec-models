@@ -71,6 +71,10 @@ def _column_width(fieldname: str, rows: Sequence[Mapping[str, Any]]) -> float:
         return 60
     if fieldname == "排查建议":
         return 76
+    if fieldname == "结论":
+        return 88
+    if fieldname == "下一步检查":
+        return 60
     if fieldname == "OP Type":
         return min(max(longest + 2, 16), 36)
     if fieldname == "NPU Types":
@@ -154,8 +158,9 @@ def _worksheet_xml(
                     value /= 100
             elif fieldname.endswith("(us)"):
                 style = 6
-            elif fieldname == "耗时比(对比/基线)" and row.get("ratio_color"):
-                style = 9 if row["ratio_color"] == "green" else 10
+            elif fieldname == "性能比(基线/对比)" and row.get("ratio_color"):
+                style = {"dark-green": 8, "green": 9, "yellow": 10, "dark-yellow": 18}.get(
+                    row["ratio_color"], 0)
             elif fieldname.endswith("Ratio(GPU/NPU)"):
                 style = 7
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -257,7 +262,7 @@ def write_grouped_workbook_xlsx(
         '<font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Arial"/></font>'
         '<font><b/><sz val="10"/><name val="Arial"/></font>'
         '</fonts>'
-        '<fills count="7">'
+        '<fills count="8">'
         '<fill><patternFill patternType="none"/></fill>'
         '<fill><patternFill patternType="gray125"/></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/>'
@@ -270,12 +275,14 @@ def write_grouped_workbook_xlsx(
         '<bgColor indexed="64"/></patternFill></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FFDCE6F1"/>'
         '<bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFFFD966"/>'
+        '<bgColor indexed="64"/></patternFill></fill>'
         '</fills>'
         '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/>'
         '</border></borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" '
         'borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="18">'
+        '<cellXfs count="19">'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" '
         'applyFont="1" applyFill="1" applyAlignment="1">'
@@ -301,6 +308,9 @@ def write_grouped_workbook_xlsx(
                   for fmt, alignment in ((0, ''), (0, ' horizontal="center" wrapText="1"'),
                                          (0, ' wrapText="1"'), (3, ''), (164, ''), (165, ''), (166, '')))
         +
+        # 18: dark yellow, the fourth performance-ratio class.
+        '<xf numFmtId="166" fontId="0" fillId="7" borderId="0" xfId="0" '
+        'applyNumberFormat="1" applyFill="1"/>'
         '</cellXfs>'
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/>'
         '</cellStyles>'

@@ -16,6 +16,25 @@ import { cleanView, readLocation, viewQuery, readSavedViews, normalizeStep } fro
 const logged = ref(false), token = ref(''), error = ref(''), busy = ref(false), config = ref({})
 const jobs = ref([]), job = ref(null), tab = ref('overview'), name = ref(''), files = reactive({}), uploading = ref(''), uploadPercent = ref(0)
 const newMode = ref('gpu_npu'), isPair = computed(() => job.value?.mode === 'npu_pair')
+const createDialog = ref(null)
+// The two flows take different inputs and cannot be switched after creation, so the
+// choice lives in the creation dialog rather than a bare <select>.
+const modes = [
+  { id: 'gpu_npu', from: 'GPU', to: 'NPU', title: 'GPU ↔ NPU 实测对比', tag: '双侧实测',
+    summary: '对齐 kernel，量化覆盖率与实测性能比。',
+    inputs: ['GPU Trace', 'NPU Trace', 'kernel_details.csv'],
+    hint: '创建后上传 3 份采集文件，再确认 PID 与 Step 范围。',
+    placeholder: '例如 BERT-base · A100 与 910B · Step 15' },
+  { id: 'npu_pair', from: 'NPU', to: 'NPU', title: 'NPU ↔ NPU 前后对比', tag: '仅需明细',
+    summary: '比较前后性能比、CV 结构与流水初筛。',
+    inputs: ['基线 kernel_details.csv', '对比 kernel_details.csv'],
+    hint: '创建后上传 2 份明细，再选择各自的 Device 与 Step。',
+    placeholder: '例如 升级 CANN 前后 · Step 15' },
+]
+const currentMode = computed(() => modes.find(m => m.id === newMode.value) || modes[0])
+function startNew(mode) { newMode.value = mode; openCreate() }
+function openCreate() { createDialog.value?.showModal() }
+function closeCreate() { createDialog.value?.close() }
 const callFilter = ref({})
 const callSearch = ref(''), callSort = ref('npu_time'), callStatus = ref(''), detailed = ref(false), focus = ref('')
 const jobSearch = ref(''), jobStatus = ref(''), jobArchived = ref(false), jobPage = ref(0), jobTotal = ref(0)
@@ -152,7 +171,12 @@ async function select(id, view=null) {
 }
 function candidates(side) { return job.value?.inspection?.profiles?.[side]?.cpu_candidates || [] }
 function steps(side) { return candidates(side).find(c => c.pid === options[side + '_pid'])?.steps || [] }
-async function createJob() { await action(async () => { const j = await api('/jobs', 'POST', { mode: newMode.value, name: name.value.trim() || (newMode.value === 'npu_pair' ? 'NPU / NPU comparison' : 'GPU / NPU comparison') }); name.value = ''; await refresh(); await select(j.id) }) }
+async function createJob() {
+  const mode = newMode.value
+  const label = name.value.trim() || (mode === 'npu_pair' ? 'NPU / NPU comparison' : 'GPU / NPU comparison')
+  closeCreate()
+  await action(async () => { const j = await api('/jobs', 'POST', { mode, name: label }); name.value = ''; await refresh(); await select(j.id) })
+}
 function sendFile(id, role, file) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest(); uploadRequest=xhr; xhr.onabort=()=>reject(new Error('上传已取消；已完成的文件保留，可继续上传')); xhr.open('PUT', `/api/jobs/${id}/inputs/${role}`); xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name)); xhr.setRequestHeader('Content-Type', 'application/octet-stream')
@@ -236,10 +260,10 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
 <template>
   <div v-if="!logged" class="login-page"><section class="login-card"><div class="brand-mark">P<span>↗</span></div><p class="eyebrow">LOCAL ANALYSIS WORKSPACE</p><h1>Profiling Workbench</h1><p class="muted">把 GPU 与 NPU 的性能差异，追溯到每一次调用。</p><form @submit.prevent="login"><label>访问令牌<input v-model="token" type="password" autocomplete="current-password" placeholder="粘贴服务器访问令牌" required></label><button class="primary" :disabled="busy">进入工作台 →</button></form><p class="muted small">令牌位于服务器数据目录的 access-token 文件，或由管理员提供。此版本是单机共享工作区。</p><p v-if="error" class="error">{{ error }}</p></section></div>
   <div v-else class="app-shell">
-    <aside class="workbench-sidebar"><div class="brand"><div class="brand-mark">P<span>↗</span></div><div>Profiling<span>WORKBENCH</span></div></div><div class="workspace-label">单机 · 共享工作区</div><form class="new-job" @submit.prevent="createJob"><select v-model="newMode" aria-label="新任务比较模式"><option value="gpu_npu">GPU ↔ NPU</option><option value="npu_pair">NPU ↔ NPU</option></select><input v-model="name" placeholder="比较任务名称" maxlength="120" aria-label="新任务名称"><button class="primary" :disabled="busy">＋ 新建比较</button></form><div class="section-label">任务 <span>{{ jobTotal }}</span></div><input v-model="jobSearch" placeholder="搜索任务名" aria-label="搜索任务名" @keyup.enter="findJobs"><div class="task-filters"><select v-model="jobStatus" @change="findJobs" aria-label="任务状态"><option value="">全部状态</option><option v-for="s in ['succeeded','running','queued','failed','needs_selection','interrupted','cancelled','uploading']" :key="s" :value="s">{{ labels[s] }}</option></select><label class="check"><input type="checkbox" v-model="jobArchived" @change="findJobs">归档</label><button @click="findJobs">搜索</button></div><nav class="task-list" aria-label="分析任务"><button v-for="j in jobs" :key="j.id" :class="['job-link', { selected: job?.id === j.id }]" @click="action(() => select(j.id))" :disabled="busy"><span class="job-name">{{ j.name }}</span><span class="job-status"><i :class="j.status"></i>{{ labels[j.status] }} · {{ new Date(j.created * 1000).toLocaleDateString() }}</span></button></nav><div class="pagination"><button :disabled="jobPage===0 || busy" @click="jobPage--;action(refresh)">上一页</button><span>{{ jobPage+1 }}</span><button :disabled="(jobPage+1)*30>=jobTotal || busy" @click="jobPage++;action(refresh)">下一页</button></div><footer><span :class="['worker-dot', { online: config.worker_online }]"></span>{{ config.worker_online ? 'Worker 在线 · 并发 1' : 'Worker 离线，请检查服务' }}<button class="text-button" v-if="config.auth_mode === 'token'" @click="logout">退出</button><span v-else>{{ config.auth_mode==='none'?'共享工作区 · 免令牌':'本机免令牌' }}</span></footer></aside>
+    <aside class="workbench-sidebar"><div class="brand"><div class="brand-mark">P<span>↗</span></div><div>Profiling<span>WORKBENCH</span></div></div><div class="workspace-label">单机 · 共享工作区</div><button class="new-compare" :disabled="busy" @click="openCreate"><span>＋</span>新建比较</button><div class="section-label">任务 <span>{{ jobTotal }}</span></div><input v-model="jobSearch" placeholder="搜索任务名" aria-label="搜索任务名" @keyup.enter="findJobs"><div class="task-filters"><select v-model="jobStatus" @change="findJobs" aria-label="任务状态"><option value="">全部状态</option><option v-for="s in ['succeeded','running','queued','failed','needs_selection','interrupted','cancelled','uploading']" :key="s" :value="s">{{ labels[s] }}</option></select><label class="check"><input type="checkbox" v-model="jobArchived" @change="findJobs">归档</label><button @click="findJobs">搜索</button></div><nav class="task-list" aria-label="分析任务"><button v-for="j in jobs" :key="j.id" :class="['job-link', { selected: job?.id === j.id }]" @click="action(() => select(j.id))" :disabled="busy"><span class="job-name">{{ j.name }}</span><span class="job-status"><i :class="j.status"></i>{{ labels[j.status] }} · {{ new Date(j.created * 1000).toLocaleDateString() }}</span></button></nav><div class="pagination"><button :disabled="jobPage===0 || busy" @click="jobPage--;action(refresh)">上一页</button><span>{{ jobPage+1 }}</span><button :disabled="(jobPage+1)*30>=jobTotal || busy" @click="jobPage++;action(refresh)">下一页</button></div><footer><span :class="['worker-dot', { online: config.worker_online }]"></span>{{ config.worker_online ? 'Worker 在线 · 并发 1' : 'Worker 离线，请检查服务' }}<button class="text-button" v-if="config.auth_mode === 'token'" @click="logout">退出</button><span v-else>{{ config.auth_mode==='none'?'共享工作区 · 免令牌':'本机免令牌' }}</span></footer></aside>
     <main class="workbench-main"><header class="workbench-header"><div><p class="eyebrow">GPU / ASCEND NPU</p><form v-if="editingName" class="rename-form" @submit.prevent="renameJob"><input v-model="editedName" aria-label="任务名称" maxlength="120" required><button class="primary" :disabled="busy || !editedName.trim()">保存</button><button type="button" @click="editingName=false">取消</button></form><h1 v-else>{{ job?.name || '性能差异，从证据开始' }} <button v-if="job" class="text-button" @click="editedName=job.name;editingName=true">修改名称</button></h1><p class="muted">{{ job ? '任务 ' + job.id.slice(0, 8) + ' · ' + (labels[job.status] || job.status) : '上传两端采集数据，生成可追溯的对齐结果与覆盖率分析。' }}</p></div><span class="privacy">● Profiling 本地处理 · AI 按需启用</span></header>
       <div class="service-toolbar"><button @click="showService">服务状态</button><span>{{ config.auth_mode==='token'?'令牌认证 · 共享工作区':config.auth_mode==='none'?'免令牌 · 共享工作区':'本机免令牌访问' }}</span></div><section v-if="service" class="panel"><h2>服务状态</h2><p>Worker {{ service.worker_online?'在线':'离线' }} · 排队 {{ service.tasks.queued || 0 }} · 运行 {{ service.tasks.running || 0 }}</p><p>存储 {{ filesize(service.storage_used_bytes) }} / {{ filesize(service.storage_bytes) }} · 内存软限制 {{ service.memory_mb }} MiB · 超时 {{ service.timeout_seconds }} 秒</p><p class="muted">状态为打开时快照。内存上限不是当前内存用量。</p></section><div v-if="error" class="error banner" role="alert">{{ error }}<button @click="error = ''" aria-label="关闭错误">×</button></div>
-      <section v-if="!job" class="empty panel"><div class="empty-symbol">↗</div><h2>创建第一组性能比较</h2><p>GPU ↔ NPU 需要两侧 trace 和 NPU 明细；NPU ↔ NPU 只需两份 kernel_details.csv。<br>在左侧新建任务，选择比较范围后开始分析。</p><div class="steps"><span>01 上传数据</span><span>02 确认范围</span><span>03 分析与查证</span></div></section>
+      <section v-if="!job" class="empty panel"><div class="empty-symbol">↗</div><h2>创建第一组性能比较</h2><p>GPU ↔ NPU 需要两侧 trace 和 NPU 明细；NPU ↔ NPU 只需两份 kernel_details.csv。</p><div class="empty-modes"><button @click="startNew('gpu_npu')"><b>GPU ↔ NPU</b><small>双侧实测 · 3 份输入</small></button><button @click="startNew('npu_pair')"><b>NPU ↔ NPU</b><small>前后对比 · 2 份明细</small></button></div><div class="steps"><span>01 选类型</span><span>02 上传数据</span><span>03 确认范围</span><span>04 分析与查证</span></div></section>
       <template v-else>
         <div class="toolbar"><span class="muted">输入和报告保存在服务器共享工作区；AI 分析经确认后发送所选证据。</span><button v-if="!active && job.status !== 'uploading'" :disabled="busy" @click="cloneJob">复用输入，新建分析</button><button v-if="!active" :disabled="busy || !!job.uploading" @click="archiveJob">{{ job.archived?'取消归档':'归档任务' }}</button><button v-if="!active" :disabled="busy || !!job.uploading" @click="removeJob">删除任务…</button></div>
         <section v-if="job.status === 'uploading'" class="panel"><div class="panel-heading"><h2>01 / 上传采集数据</h2><span class="muted">单文件上限 {{ filesize(config.max_upload_bytes) }}</span></div><div class="drop-zone" @dragover.prevent @drop.prevent="acceptFiles"><strong>拖拽多个文件到此处</strong><p class="muted">按文件名建议角色，请检查下方分配。无法识别的文件可手动选择角色。</p><input type="file" multiple accept=".json,.csv" aria-label="批量选择输入文件" :disabled="busy" @change="acceptFiles"></div><div v-for="(f,i) in unassignedFiles" :key="i" class="unassigned">{{ f.name }} <select aria-label="分配文件角色" @change="assignFile(i,$event.target.value)"><option value="">选择文件角色</option><option v-for="r in roles" :key="r.key" :value="r.key">{{ r.title }}</option></select><button @click="unassignedFiles.splice(i,1)">移除</button></div><div class="upload-grid"><label v-for="role in roles" :key="role.key" class="upload-box"><span class="file-icon">{{ role.accept === '.csv' ? 'CSV' : 'JSON' }}</span><strong>{{ role.title }}</strong><span class="muted">{{ role.hint }}</span><input type="file" :accept="role.accept" :disabled="busy" @change="files[role.key] = $event.target.files[0]"><span class="small">{{ files[role.key]?.name || job.inputs?.[role.key]?.name || '请选择文件' }}</span><span v-if="job.inputs?.[role.key]" class="success">已保存 · {{ filesize(job.inputs[role.key].size) }}</span></label></div><p class="muted">文件将流式保存到服务器；不会在浏览器解析完整 trace。输入开始预检查后冻结。</p><div v-if="uploading" class="upload-progress">{{ uploading }} · {{ uploadPercent }}%<progress :value="uploadPercent" max="100"></progress><button @click="cancelUpload">取消当前上传</button></div><button class="primary" :disabled="busy" @click="uploadAll">{{ busy ? '正在上传…' : '上传并预检查 →' }}</button></section>
@@ -283,5 +307,35 @@ onBeforeUnmount(() => { clearInterval(timer);window.removeEventListener('popstat
     <EvidenceDrawer v-if="detail" :record="detail" :evidence="evidence" @close="closeDetail"/>
 
     <ManualLinkDialog v-if="manualType" :key="job.id" :job="job" :type="manualType" :seed="manualSeed" :api="api" @close="manualType=null" @submitted="manualSubmitted" @upgrade="manualUpgrade"/>
+
+    <dialog ref="createDialog" class="create-dialog" aria-labelledby="create-title" @cancel.prevent="closeCreate()">
+      <form @submit.prevent="createJob">
+        <header class="create-head">
+          <p class="eyebrow">NEW COMPARISON</p>
+          <h2 id="create-title">新建比较</h2>
+          <p class="muted small">两种比较的输入与口径不同，创建后不能切换；需要换类型请新建任务。</p>
+          <button type="button" class="create-close" aria-label="关闭" @click="closeCreate()">×</button>
+        </header>
+        <div class="create-body">
+          <div class="mode-cards" role="radiogroup" aria-label="比较类型">
+            <label v-for="m in modes" :key="m.id" :class="['mode-card', { selected: newMode === m.id }]">
+              <input type="radio" name="compare-mode" :value="m.id" v-model="newMode">
+              <span class="mode-glyph"><b>{{ m.from }}</b><i>⇄</i><b>{{ m.to }}</b></span>
+              <span class="mode-title">{{ m.title }}<em>{{ m.tag }}</em></span>
+              <span class="mode-summary">{{ m.summary }}</span>
+              <span class="mode-inputs"><i v-for="i in m.inputs" :key="i">{{ i }}</i></span>
+            </label>
+          </div>
+          <label class="create-name">任务名称（可选）
+            <input v-model="name" maxlength="120" autofocus :placeholder="currentMode.placeholder" aria-label="比较任务名称">
+          </label>
+        </div>
+        <footer class="create-actions">
+          <span class="muted small">{{ currentMode.hint }}</span>
+          <button type="button" @click="closeCreate()">取消</button>
+          <button class="primary" :disabled="busy">{{ busy ? '正在创建…' : '创建并上传 →' }}</button>
+        </footer>
+      </form>
+    </dialog>
   </div>
 </template>

@@ -21,13 +21,14 @@ def page(path, view, op, core, offset, limit, search="", sort="difference"):
         args.extend([op, core])
     if search:
         fields = ["op","core"] if view == "types" else [
+            """json_extract(data,'$."名称"')""",
             """json_extract(data,'$."输入 Shape"')""", """json_extract(data,'$."输出 Shape"')""",
             """json_extract(data,'$."输入 dtype"')""", """json_extract(data,'$."输出 dtype"')"""]
         where += " AND ("+" OR ".join("instr(lower("+f+"),lower(?))>0" for f in fields)+")"
         args.extend([search]*len(fields))
     order = {"difference":"seq", "baseline":"""json_extract(data,'$."基线耗时(us)"') DESC, seq""",
              "candidate":"""json_extract(data,'$."对比耗时(us)"') DESC, seq""",
-             "ratio":"""json_extract(data,'$."耗时比(对比/基线)"') DESC, seq"""}[sort]
+             "ratio":"""json_extract(data,'$."性能比(基线/对比)"') DESC, seq"""}[sort]
     with closing(sqlite3.connect(path.as_uri()+"?mode=ro", uri=True)) as db:
         total, = db.execute("SELECT COUNT(*) FROM items WHERE "+where, args).fetchone()
         rows = db.execute("SELECT data FROM items WHERE "+where+" ORDER BY "+order+" LIMIT ? OFFSET ?", [*args, limit, offset])
