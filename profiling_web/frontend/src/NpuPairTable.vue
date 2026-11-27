@@ -44,6 +44,7 @@ watch(()=>[url.value,props.job.attempt,page.value,retry.value], async (_,__,clea
 },{immediate:true})
 </script>
 <template>
+  <div class="pair-table">
   <form class="toolbar" @submit.prevent="filter">
     <input v-model="draft" :placeholder="scope?'搜索 Shape / dtype':'搜索 OP Type / Core Type'" aria-label="搜索当前表格" maxlength="200">
     <select v-model="sort" @change="filter" aria-label="排序"><option value="difference">耗时差绝对值降序</option><option value="baseline">基线耗时降序</option><option value="candidate">对比耗时降序</option><option value="ratio">性能比降序</option></select>
@@ -56,6 +57,7 @@ watch(()=>[url.value,props.job.attempt,page.value,retry.value], async (_,__,clea
     <tbody><tr v-for="(r,i) in rows" :key="i"><td v-if="!scope"><button @click="$emit('details',r)">详细比较</button></td>
       <td v-for="c in columns" :key="c" :class="c==='性能比(基线/对比)' ? colorOf(r) : ''">{{ display(r[c]) }}</td></tr></tbody></table></div>
   <div class="pagination"><span>共 {{ total }} 组 · 第 {{ page+1 }} 页</span><button :disabled="loading || !page" @click="page--">上一页</button><button :disabled="loading || (page+1)*limit>=total" @click="page++">下一页</button></div>
+  </div>
 </template>
 <style scoped>
 td,th{white-space:nowrap}

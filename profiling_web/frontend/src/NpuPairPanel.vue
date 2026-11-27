@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import NpuPairTable from './NpuPairTable.vue'
 import NpuPairPipelineTable from './NpuPairPipelineTable.vue'
 import ReportDownloads from './ReportDownloads.vue'
@@ -24,6 +24,26 @@ const summary = computed(()=>props.job.summary)
 const format = v => v == null ? '—' : Number(v).toLocaleString(undefined,{maximumFractionDigits:4})
 const selected=ref(null), showDetail=ref(false)
 const detail=computed(()=>showDetail.value ? selected.value : null)
+// Both views share one place: switching hides the other table (display:none, so its page and
+// search survive) and brings the heading into view instead of leaving it above the fold.
+const detailHeading = ref(null)
+function scrollToHeading() {
+  const top = detailHeading.value?.getBoundingClientRect().top
+  if (top == null) return
+  window.scrollTo({top: Math.max(top + window.scrollY - 88, 0), behavior: 'smooth'})
+}
+async function showDetailView(row) {
+  if (row) selected.value = row
+  if (!selected.value) return
+  showDetail.value = true
+  await nextTick()
+  scrollToHeading()
+}
+async function hideDetailView() {
+  showDetail.value = false
+  await nextTick()
+  scrollToHeading()
+}
 const classes = {Cube:'Cube',Vector:'Vector',Unknown:'未知'}
 // Performance-ratio thresholds. They are sent with the run so the Excel/JSON use the same
 // numbers the workbench colours by; later edits only recolour the live table.
@@ -104,8 +124,8 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
     </template>
     <template v-if="summary.schema_version>=2">
       <div class="tabs" role="tablist" aria-label="NPU 比较视图">
-        <button role="tab" :aria-selected="!detail" :class="{active:!detail}" @click="showDetail=false">类型对比</button>
-        <button role="tab" :aria-selected="!!detail" :disabled="!selected" :class="{active:!!detail}" @click="showDetail=true">算子详情</button>
+        <button role="tab" :aria-selected="!detail" :class="{active:!detail}" @click="hideDetailView">类型对比</button>
+        <button role="tab" :aria-selected="!!detail" :disabled="!selected" :class="{active:!!detail}" @click="showDetailView()">算子详情</button>
       </div>
       <div class="threshold-row">
         <span class="threshold-label">性能阈值</span>
@@ -116,9 +136,9 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
         <span class="ratio-legend"><i class="dark-green">≥ 1.5× 阈值</i><i class="green">≥ 阈值</i><i class="yellow">≥ 0.5× 阈值</i><i class="dark-yellow">&lt; 0.5× 阈值</i></span>
       </div>
       <p class="muted small">阈值为性能比（基线 / 对比）的达标线：绿色代表达到或超过，黄色代表未达标；Mixed / Unknown 不套用阈值。表内配色随输入实时计算，Excel 使用分析时的阈值。</p>
-      <h2>{{ detail ? '详细比较 · '+detail['OP Type']+' / '+(detail['Core Type']||'未标记') : '类型对比' }}</h2>
-      <button v-if="detail" @click="showDetail=false">← 返回类型对比</button>
-      <NpuPairTable v-show="!detail" :job="job" :api="api" :thresholds="thresholds" @details="selected=$event; showDetail=true"/>
+      <h2 ref="detailHeading">{{ detail ? '详细比较 · '+detail['OP Type']+' / '+(detail['Core Type']||'未标记') : '类型对比' }}</h2>
+      <button v-if="detail" @click="hideDetailView">← 返回类型对比</button>
+      <NpuPairTable v-show="!detail" :job="job" :api="api" :thresholds="thresholds" @details="showDetailView($event)"/>
       <NpuPairTable v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds"/>
     </template>
     <template v-else><h2>类型对比（历史结果）</h2><p class="notice">此结果没有 CV 和详细比较索引，可复用输入重新分析。</p>
