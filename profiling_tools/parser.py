@@ -1231,8 +1231,12 @@ def _row_lookup(row: Mapping[str, str], *aliases: str) -> str:
 
 
 def load_kernel_details(path: str, requested_step: str = "") -> List[KernelDetail]:
+    return list(iter_kernel_details(path, requested_step))
+
+
+def iter_kernel_details(path: str, requested_step: str = "") -> Iterable[KernelDetail]:
+    """Read the canonical detail fields without retaining the full CSV in memory."""
     csv_path = Path(path)
-    details: List[KernelDetail] = []
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
@@ -1241,28 +1245,25 @@ def load_kernel_details(path: str, requested_step: str = "") -> List[KernelDetai
             step_id = _row_lookup(row, "Step Id", "Step ID")
             if requested_step and step_id and not _step_matches(step_id, requested_step):
                 continue
-            details.append(
-                KernelDetail(
-                    row_index=row_index,
-                    name=_row_lookup(row, "Name", "Kernel Name", "OP Name"),
-                    op_type=_row_lookup(row, "Type", "OP Type"),
-                    core_type=_row_lookup(row, "Accelerator Core", "Core Type"),
-                    task_id=_normalized_id(_row_lookup(row, "Task ID", "Task Id")),
-                    stream_id=_normalized_id(_row_lookup(row, "Stream ID", "Stream Id")),
-                    device_id=_normalized_id(_row_lookup(row, "Device_id", "Device ID")),
-                    step_id=step_id,
-                    start_us=_safe_float(_row_lookup(row, "Start Time(us)", "Start Time(μs)")),
-                    duration_us=_safe_float(_row_lookup(row, "Duration(us)", "Duration(μs)")),
-                    input_shapes=_row_lookup(row, "Input Shapes"),
-                    input_dtypes=_row_lookup(row, "Input Data Types"),
-                    output_shapes=_row_lookup(row, "Output Shapes"),
-                    output_dtypes=_row_lookup(row, "Output Data Types"),
-                    raw=dict(row),
-                    aicore_time_us=_safe_float(_row_lookup(row, "aicore_time(us)", "aicore_time(μs)", "aicore_time")),
-                    aiv_vec_time_us=_safe_float(_row_lookup(row, "aiv_vec_time(us)", "aiv_vec_time(μs)", "aiv_vec_time")),
-                )
+            yield KernelDetail(
+                row_index=row_index,
+                name=_row_lookup(row, "Name", "Kernel Name", "OP Name"),
+                op_type=_row_lookup(row, "Type", "OP Type"),
+                core_type=_row_lookup(row, "Accelerator Core", "Core Type"),
+                task_id=_normalized_id(_row_lookup(row, "Task ID", "Task Id")),
+                stream_id=_normalized_id(_row_lookup(row, "Stream ID", "Stream Id")),
+                device_id=_normalized_id(_row_lookup(row, "Device_id", "Device ID")),
+                step_id=step_id,
+                start_us=_safe_float(_row_lookup(row, "Start Time(us)", "Start Time(μs)")),
+                duration_us=_safe_float(_row_lookup(row, "Duration(us)", "Duration(μs)")),
+                input_shapes=_row_lookup(row, "Input Shapes"),
+                input_dtypes=_row_lookup(row, "Input Data Types"),
+                output_shapes=_row_lookup(row, "Output Shapes"),
+                output_dtypes=_row_lookup(row, "Output Data Types"),
+                raw=dict(row),
+                aicore_time_us=_safe_float(_row_lookup(row, "aicore_time(us)", "aicore_time(μs)", "aicore_time")),
+                aiv_vec_time_us=_safe_float(_row_lookup(row, "aiv_vec_time(us)", "aiv_vec_time(μs)", "aiv_vec_time")),
             )
-    return details
 
 
 def _detail_kernel_cost(detail: KernelDetail, kernel: KernelRecord) -> float:

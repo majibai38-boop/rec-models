@@ -1,7 +1,7 @@
 <h1 align="center">GPU/NPU Profiling 工具集</h1>
 
 <p align="center"><strong>Profiling Workbench 做双侧实测对比，Workload Modeler 做单侧画像与性能估算。</strong></p>
-<p align="center">PyTorch GPU × Ascend NPU · 本地处理 · 独立 Web 服务 · 可追溯报告</p>
+<p align="center">GPU ↔ Ascend NPU · Ascend NPU ↔ NPU · 本地处理 · 可追溯报告</p>
 <p align="center">
   <a href="#选择工具">选择工具</a> ·
   <a href="#界面演示">界面演示</a> ·

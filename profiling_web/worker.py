@@ -10,7 +10,7 @@ import time
 import psutil
 
 from profiling_tools.provenance import write_json
-from .settings import INPUTS, Settings, disk_usage
+from .settings import job_inputs, Settings, disk_usage
 from .store import Store
 
 
@@ -80,11 +80,11 @@ class Worker:
         root = self.store.path(job["id"])
         attempt = root / "attempts" / job["attempt"]
         attempt.mkdir(parents=True)
-        config = {key: str(root / "inputs" / name) for key, name in INPUTS.items()}
+        config = {key: str(root / "inputs" / name) for key, name in job_inputs(job["mode"]).items()}
         config.update(job["options"] or {})
         config.update(output_dir=str(attempt / "reports"), require_explicit_scope=True)
         task = attempt / "task.json"
-        write_json(task, {"kind": job["kind"], "config": config,
+        write_json(task, {"kind": job["kind"], "mode": job["mode"], "config": config,
                           "manual": job.get('manual',{}),
                           "parent": {"pid": os.getpid(), "created": psutil.Process().create_time()}})
         with (attempt / "worker.log").open("wb") as log:

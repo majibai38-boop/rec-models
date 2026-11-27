@@ -19,7 +19,6 @@ def run(task_path):
     task_path = Path(task_path)
     task = json.loads(task_path.read_text(encoding="utf-8"))
     attempt = task_path.parent
-    config = CompareConfig(**task["config"])
     def watch_parent():
         while True:
             time.sleep(1)
@@ -37,6 +36,30 @@ def run(task_path):
         write_json(attempt / "progress.json", {"stage": stage})
 
     try:
+        if task.get("mode") == "npu_pair":
+            from profiling_tools.npu_pair import REPORTS, compare_npus, inspect_side
+            opts = dict(task["config"])
+            opts.pop("require_explicit_scope")
+            try:
+                if task["kind"] == "inspect":
+                    progress("inspection")
+                    inventory = {k: inspect_side(opts[k+"_details"], label) for k, label in
+                                 (("baseline", "基线"), ("candidate", "对比"))}
+                    result = {"status": "needs_selection", "inspection": inventory}
+                else:
+                    progress("reports")
+                    report = compare_npus(**opts)
+                    summary = {k: report[k] for k in ("overall", "baseline", "candidate")}
+                    summary.update(reports=list(REPORTS), types=report["types"][:100], type_count=len(report["types"]))
+                    result = {"status": "succeeded", "summary": summary}
+            except ValueError as exc:
+                message = str(exc)
+                for key in ("baseline_details", "candidate_details"):
+                    message = message.replace(opts[key], key)
+                result = {"status": "failed", "error": message[:500]}
+            write_json(attempt / "result.json", result)
+            return 0 if result["status"] != "failed" else 1
+        config = CompareConfig(**task["config"])
         if task["kind"] == "inspect":
             progress("inspection")
             report = inspect_inputs(config)

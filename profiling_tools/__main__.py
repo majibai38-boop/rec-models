@@ -95,6 +95,9 @@ def _result_command(command, argv):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["compare-npu"]:
+        from .npu_pair import main as compare_npu
+        return compare_npu(argv[1:])
     command = argv.pop(0) if argv and argv[0] in {"inspect", "compare", "summary", "query", "validate", "call-evidence", "tables"} else "legacy"
     if command in {"tables", "call-evidence"}:
         from .call_tables import CallEvidence, InvalidResults, export_tables

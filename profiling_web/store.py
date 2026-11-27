@@ -6,6 +6,8 @@ import sqlite3
 import time
 import uuid
 
+from .settings import job_inputs
+
 
 class Conflict(ValueError):
     pass
@@ -25,6 +27,8 @@ class Store:
                 inspection TEXT, summary TEXT, error TEXT DEFAULT '',
                 cancel INTEGER DEFAULT 0, uploading INTEGER DEFAULT 0)""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            if "mode" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'gpu_npu'")
             if "archived" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
             if "manual" not in columns:
@@ -56,11 +60,11 @@ class Store:
             item[key] = json.loads(item[key]) if item[key] else None
         return item
 
-    def create(self, name):
+    def create(self, name, mode="gpu_npu"):
         job_id, now = uuid.uuid4().hex, time.time()
         (self.path(job_id) / "inputs").mkdir(parents=True)
         with self.connect() as db:
-            db.execute("INSERT INTO jobs(id,name,status,stage,created,updated) VALUES(?,?,'uploading','uploading',?,?)", (job_id, name, now, now))
+            db.execute("INSERT INTO jobs(id,name,mode,status,stage,created,updated) VALUES(?,?,?,'uploading','uploading',?,?)", (job_id, name, mode, now, now))
         return self.get(job_id)
 
     def list(self, offset=0, limit=50, search="", status=None, archived=False):
@@ -123,9 +127,11 @@ class Store:
             row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row["status"] not in allowed or row["uploading"]:
                 raise Conflict("当前任务状态不允许启动；成功结果需新建任务，不能覆盖")
-            if set(json.loads(row["inputs"])) != {"gpu_trace", "npu_trace", "npu_kernel_details"}:
-                raise Conflict("请先上传三个必需文件")
-            if kind == "compare" and not row["inspection"]:
+            if kind not in ({"inspect", "npu_pair"} if row["mode"] == "npu_pair" else {"inspect", "compare"}):
+                raise Conflict("分析入口与任务模式不同")
+            if set(json.loads(row["inputs"])) != set(job_inputs(row["mode"])):
+                raise Conflict("请先上传当前比较模式的所有必需文件")
+            if kind != "inspect" and not row["inspection"]:
                 raise Conflict("请先完成预检查")
             db.execute("UPDATE jobs SET status='queued',stage='queued',kind=?,options=?,cancel=0,error='',summary=NULL,attempt=NULL,started=NULL,updated=? WHERE id=?",
                        (kind, json.dumps(options or {}), time.time(), job_id))

@@ -1,5 +1,7 @@
 # Profiling Workbench：单机 Web 工作台
 
+**NPU 与 NPU 比较：** 在左侧新建任务时选「NPU ↔ NPU」，分别上传基线和对比采集的 `kernel_details.csv`。预检查后选各自的设备、Step（或明确选择完整采集）。结果页按累计耗时差列出前 100 类，显示仅单侧出现的类型、数量、平均及总体耗时。下载 Excel/JSON 查看所有类型和输入输出 shape、dtype 明细。此模式不需要 GPU/CPU trace，不做跨设备逐调用或 AI 关联。比值方向与 GPU/NPU 工作流不同，详见[计算口径与 CLI](../profiling_tools/README.md#对比两份-npu-采集)。
+
 复用 `profiling_tools` 的对齐与诊断引擎，提供上传、范围预检查、后台任务、图表、证据查询和 Excel 下载。不需要 GPU/NPU 硬件，默认不调用外部 AI 服务。可选接入 [DeepSeek Harness / Codex 辅助分析](AI.md)，提供带证据的解释、关联建议及人工确认后的批量应用。AI 页面可选择发送本次选中 Step 的完整 Trace，并在后续追问中复用后端会话，避免重复附加文件。
 
 本服务用于 **GPU/NPU 双侧实测比较**，默认端口为 **8000**，输入为 GPU Trace、NPU Trace 与 NPU `kernel_details.csv`。如果只有一端采集、需要维护芯片规格或预测目标设备性能，请使用独立的 [Workload Modeler](../workload_modeler/README.md)（默认端口 **8770**）。两者任务与数据目录独立，Workload 的预测倍率不等同于本服务的实测 GPU/NPU 比值；完整对照见[仓库首页](../README.md#选择工具)。

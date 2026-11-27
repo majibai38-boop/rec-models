@@ -58,5 +58,11 @@ class Settings:
 INPUTS = {"gpu_trace": "gpu.json", "npu_trace": "npu.json", "npu_kernel_details": "kernel_details.csv"}
 
 
+def job_inputs(mode):
+    if mode == "npu_pair":
+        return {"baseline_details": "baseline.csv", "candidate_details": "candidate.csv"}
+    return INPUTS
+
+
 def disk_usage(root):
     return sum(p.stat().st_size for p in Path(root).rglob("*") if p.is_file() and not p.is_symlink())

@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .index import call_evidence, downloadable, query_index, manual_options, manual_group, manual_batch_plan
-from .settings import INPUTS, Settings, disk_usage
+from .settings import Settings, disk_usage, job_inputs
 from .store import Conflict, Store
 from .worker import worker_lock
 
@@ -32,6 +32,7 @@ from .worker import worker_lock
 class JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(default="GPU / NPU comparison", min_length=1, max_length=120)
+    mode: Literal["gpu_npu", "npu_pair"] = "gpu_npu"
 
     @field_validator("name")
     @classmethod
@@ -81,6 +82,22 @@ class RunOptions(BaseModel):
             raise ValueError("全量范围不能同时指定 step")
         if not self.all_steps and (not self.gpu_step.strip() or not self.npu_step.strip()):
             raise ValueError("请选择两端 step，或明确选择全量范围")
+        return self
+
+
+class NpuPairOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    baseline_device: str = Field(default="", max_length=64)
+    candidate_device: str = Field(default="", max_length=64)
+    baseline_step: str = Field(default="", max_length=128)
+    candidate_step: str = Field(default="", max_length=128)
+    all_steps: bool = False
+
+    @model_validator(mode="after")
+    def scope(self):
+        steps = (self.baseline_step.strip(), self.candidate_step.strip())
+        if (self.all_steps and any(steps)) or (not self.all_steps and not all(steps)):
+            raise ValueError("请选择两侧 Step 或明确选择全量")
         return self
 
 
@@ -279,7 +296,7 @@ def create_app(settings=None):
 
     @app.post("/api/jobs", status_code=201)
     def create(body: JobRequest):
-        return store.create(body.name)
+        return store.create(body.name, body.mode)
 
     @app.get("/api/jobs/{job_id}")
     def get(job_id: str):
@@ -295,14 +312,15 @@ def create_app(settings=None):
         # original cannot invalidate a clone, and no arbitrary path is accepted.
         async with upload_lock:
             source = store.get(job_id)
-            if source["status"] in {"uploading", "queued", "running"} or source["uploading"] or set(source["inputs"] or {}) != set(INPUTS):
+            inputs = job_inputs(source["mode"])
+            if source["status"] in {"uploading", "queued", "running"} or source["uploading"] or set(source["inputs"] or {}) != set(inputs):
                 raise Conflict("请等待输入冻结且任务结束后再复用")
             needed = sum(item["size"] for item in source["inputs"].values())
             if await asyncio.to_thread(disk_usage, settings.data_dir) + needed > settings.storage_bytes:
                 raise HTTPException(507, "复用输入所需空间不足，请先清理任务")
-            copied = store.create((source["name"][:112] + " · 新运行")[:120])
+            copied = store.create((source["name"][:112] + " · 新运行")[:120], source["mode"])
             def copy_inputs():
-                for role, filename in INPUTS.items():
+                for role, filename in inputs.items():
                     origin = store.path(job_id) / "inputs" / filename
                     if origin.is_symlink() or not origin.is_file():
                         raise Conflict("源输入不可用")
@@ -350,34 +368,36 @@ def create_app(settings=None):
 
     @app.get("/api/jobs/{job_id}/inputs/{role}")
     def original_input(job_id: str, role: str):
-        if role not in INPUTS:
-            raise HTTPException(404, "未知文件角色")
         job = store.get(job_id)
+        roles = job_inputs(job["mode"])
+        if role not in roles:
+            raise HTTPException(404, "未知文件角色")
         info = (job.get("inputs") or {}).get(role)
         if job["uploading"]:
             raise HTTPException(409, "文件正在上传，请完成后下载")
         if not info:
             raise HTTPException(404, "原始输入尚未上传")
         directory = store.path(job_id) / "inputs"
-        path = directory / INPUTS[role]
+        path = directory / roles[role]
         if directory.is_symlink() or path.is_symlink() or not path.is_file():
             raise HTTPException(404, "原始输入不存在")
         if path.stat().st_size != info['size']:
             raise HTTPException(409, "原始输入大小已改变，请核对服务器文件")
-        name = str(info.get('name') or INPUTS[role]).replace('\\', '/').split('/')[-1]
+        name = str(info.get('name') or roles[role]).replace('\\', '/').split('/')[-1]
         name = ''.join(c for c in name if c.isprintable())[:200]
         if name in {'', '.', '..'}:
-            name = INPUTS[role]
+            name = roles[role]
         # Original uploads must remain byte-for-byte intact, including CSV cells.
         return FileResponse(path, filename=name, media_type="application/octet-stream")
 
     @app.put("/api/jobs/{job_id}/inputs/{role}")
     async def upload(job_id: str, role: str, request: Request):
-        if role not in INPUTS:
+        roles = job_inputs(store.get(job_id)["mode"])
+        if role not in roles:
             raise HTTPException(404, "未知文件角色")
         async with upload_lock:
             store.start_upload(job_id)
-            target = store.path(job_id) / "inputs" / INPUTS[role]
+            target = store.path(job_id) / "inputs" / roles[role]
             temp = target.with_suffix(".upload")
             try:
                 used = await asyncio.to_thread(disk_usage, settings.data_dir)
@@ -397,7 +417,7 @@ def create_app(settings=None):
                     raise HTTPException(422, "不能上传空文件")
                 temp.replace(target)
                 inputs = store.get(job_id)["inputs"]
-                name = unquote(request.headers.get("x-filename", INPUTS[role]))
+                name = unquote(request.headers.get("x-filename", roles[role]))
                 name = name.replace("\\", "/").split("/")[-1]
                 inputs[role] = {"name": "".join(c for c in name if c.isprintable())[:200], "size": size, "sha256": digest.hexdigest()}
                 store.update(job_id, inputs=inputs)
@@ -413,6 +433,10 @@ def create_app(settings=None):
     @app.post("/api/jobs/{job_id}/run", status_code=202)
     def run(job_id: str, options: RunOptions):
         return store.enqueue(job_id, "compare", options.model_dump())
+
+    @app.post("/api/jobs/{job_id}/run-npu-pair", status_code=202)
+    def run_pair(job_id: str, options: NpuPairOptions):
+        return store.enqueue(job_id, "npu_pair", options.model_dump())
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str):
@@ -578,6 +602,15 @@ def create_app(settings=None):
 
     @app.get("/api/jobs/{job_id}/artifacts/{name}")
     def artifact(job_id: str, name: str):
+        from profiling_tools.npu_pair import REPORTS
+        job = store.get(job_id)
+        if job["mode"] == "npu_pair":
+            if job["status"] != "succeeded" or name not in REPORTS:
+                raise HTTPException(404, "报告尚未生成或文件不可下载")
+            path = store.path(job_id) / "attempts" / job["attempt"] / "reports" / name
+            if path.is_symlink() or not path.is_file():
+                raise HTTPException(404, "文件不存在")
+            return FileResponse(path, filename=name)
         job, root = result_paths(job_id)
         if not downloadable(name) or name not in job["summary"]["reports"]:
             raise HTTPException(404, "文件不可下载")
