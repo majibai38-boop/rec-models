@@ -1,8 +1,9 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import Chart from './Chart.vue'
-import { PAIR_COLORS, colorOf, numelOf } from './npuPairView.js'
+import { PAIR_COLORS, colorOf, inputCountOf, numelOf } from './npuPairView.js'
 const props = defineProps({ job: Object, api: Function, scope: Object, thresholds: Object })
+const emit = defineEmits(['select'])
 const rows = ref([]), total = ref(0), loading = ref(false), error = ref('')
 const LIMIT = 200
 const url = computed(() => '/jobs/' + props.job.id + '/npu-pair-table?' + new URLSearchParams({
@@ -46,10 +47,17 @@ const bars = computed(() => ({
   xAxis: { type: 'value', name: 'μs' },
   yAxis: { type: 'category', data: top.value.map(shortLabel), axisLabel: { fontSize: 10 } },
   series: [
-    { name: '基线耗时', type: 'bar', itemStyle: { color: '#7489ba' }, data: top.value.map(row => row['基线耗时(us)']) },
-    { name: '对比耗时', type: 'bar', itemStyle: { color: '#167d78' }, data: top.value.map(row => row['对比耗时(us)']) },
+    { name: '基线耗时', type: 'bar', itemStyle: { color: '#7489ba' },
+      data: top.value.map(row => ({ value: row['基线耗时(us)'], payload: row })) },
+    { name: '对比耗时', type: 'bar', itemStyle: { color: '#167d78' },
+      data: top.value.map(row => ({ value: row['对比耗时(us)'], payload: row })) },
   ],
 }))
+
+// Scatter X axis follows the selected input tensor, as in the GPU/NPU workbench.
+const inputIndex = ref(0)
+const inputCount = computed(() => inputCountOf(rows.value))
+watch(inputCount, total => { if (inputIndex.value >= total) inputIndex.value = 0 })
 
 // The horizontal line is the threshold this type is measured against, when it has one.
 const limit = computed(() => {
@@ -57,16 +65,16 @@ const limit = computed(() => {
   return cv === 'Cube' ? values?.cube : cv === 'Vector' ? values?.vector : null
 })
 const plotted = computed(() => rows.value
-  .map(row => ({ row, x: numelOf(row['输入 Shape'], row['输入 dtype']) }))
+  .map(row => ({ row, x: numelOf(row['输入 Shape'], row['输入 dtype'], inputIndex.value) }))
   .filter(item => item.x != null && item.row['性能比(基线/对比)'] != null))
 
 const scatter = computed(() => ({
   tooltip: {
     confine: true, renderMode: 'richText',
-    formatter: p => `${p.data.name}\n元素数 ${fmt(p.value[0])}\n性能比 ${fmt(p.value[1])}\n对比耗时 ${fmt(p.data.time)} μs`,
+    formatter: p => `${p.data.name}\ninput[${inputIndex.value}] 元素数 ${fmt(p.value[0])}\n性能比 ${fmt(p.value[1])}\n对比耗时 ${fmt(p.data.time)} μs`,
   },
   grid: { left: 8, right: 30, top: 34, bottom: 40, containLabel: true },
-  xAxis: { type: 'value', name: '首个输入元素数', nameLocation: 'middle', nameGap: 26, axisLabel: { fontSize: 10 } },
+  xAxis: { type: 'value', name: `input[${inputIndex.value}] 元素数`, nameLocation: 'middle', nameGap: 26, axisLabel: { fontSize: 10 } },
   yAxis: { type: 'value', name: '性能比', scale: true },
   series: [{
     type: 'scatter',
@@ -81,24 +89,40 @@ const scatter = computed(() => ({
     data: plotted.value.map(({ row, x }) => {
       const ratio = row['性能比(基线/对比)']
       return {
-        name: title(row), value: [x, ratio], time: row['对比耗时(us)'],
+        name: title(row), value: [x, ratio], time: row['对比耗时(us)'], payload: row,
         symbolSize: Math.min(34, 6 + Math.sqrt(Math.max(row['对比耗时(us)'] || 0, 0))),
         itemStyle: { color: PAIR_COLORS[colorOf(ratio, row.CV, props.thresholds)] || PAIR_COLORS[''] },
       }
     }),
   }],
 }))
+
+// Clicking a bar or a dot filters the table below to that shape group.
+function pick(params) { const row = params?.data?.payload; if (row) emit('select', row) }
 </script>
 <template>
   <p v-if="error" role="alert">{{ error }}</p>
   <p v-else-if="loading && !rows.length">正在准备图表…</p>
   <template v-else-if="rows.length">
     <div class="detail-charts">
-      <section v-if="top.length"><h3>shape 耗时对比 · Top {{ top.length }}</h3><Chart :option="bars"/></section>
-      <section v-if="plotted.length"><h3>输入规模与性能比</h3><Chart :option="scatter"/></section>
+      <section v-if="top.length">
+        <h3>shape 耗时对比 · Top {{ top.length }}</h3>
+        <Chart :option="bars" @select="pick"/>
+      </section>
+      <section v-if="plotted.length">
+        <div class="chart-head">
+          <h3>输入规模与性能比</h3>
+          <label v-if="inputCount > 1" class="chart-input">输入位置
+            <select v-model.number="inputIndex" aria-label="散点图输入位置">
+              <option v-for="n in inputCount" :key="n" :value="n - 1">input[{{ n - 1 }}]</option>
+            </select>
+          </label>
+        </div>
+        <Chart :option="scatter" @select="pick"/>
+      </section>
       <p v-else class="muted">此类型的 shape 不足以画输入规模图。</p>
     </div>
-    <p class="muted small">按对比耗时取当前类型的前 {{ Math.min(total, 200) }} 个 shape 分组{{ total > 200 ? '（共 ' + total + ' 个）' : '' }}；气泡大小为对比耗时，虚线是该类型与性能比 1.0。图表只用于定位，不改变表格与比值口径。</p>
+    <p class="muted small">按对比耗时取当前类型的前 {{ Math.min(total, 200) }} 个 shape 分组{{ total > 200 ? '（共 ' + total + ' 个）' : '' }}；气泡大小为对比耗时，虚线是该类型的性能阈值与 1.0。点柱子或气泡会把下方表格筛到该 shape，便于逐项查证。</p>
   </template>
 </template>
 <style scoped>
@@ -106,5 +130,8 @@ const scatter = computed(() => ({
 .detail-charts section{min-width:0}
 .detail-charts h3{margin:0 0 6px;font-size:13px;color:#33413c;font-weight:600}
 .detail-charts .chart{height:340px}
+.chart-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.chart-input{display:flex;align-items:center;gap:6px;font-size:11px;color:#61756e;margin-bottom:6px}
+.chart-input select{font-size:11px;padding:4px 7px}
 @media(max-width:1100px){.detail-charts{grid-template-columns:1fr}}
 </style>

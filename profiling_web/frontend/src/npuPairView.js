@@ -15,13 +15,19 @@ export function colorOf(ratio, cv, thresholds) {
   return 'dark-yellow'
 }
 
-// Element count of the first input tensor from "32,64;64,128" / "FLOAT16;FLOAT16".
-export function numelOf(shapes, dtypes) {
-  const shape = String(shapes || '').split(';')[0].trim()
-  const dtype = String(dtypes || '').split(';')[0].trim().toLowerCase()
+// Element count of one input tensor from "32,64;64,128" / "FLOAT16;FLOAT16".
+export function numelOf(shapes, dtypes, index = 0) {
+  const parts = String(shapes || '').split(';')
+  const shape = (parts[index] ?? parts[0] ?? '').trim()
+  const dtype = String(String(dtypes || '').split(';')[index] ?? '').trim().toLowerCase()
   if (!shape || ['none', 'scalar', 'tensorlist'].includes(dtype)) return null
   const dims = shape.split(',').map(part => Number(part.trim()))
   if (!dims.length || dims.some(value => !Number.isSafeInteger(value) || value < 0)) return null
   const total = dims.reduce((a, b) => a * b, 1)
   return Number.isSafeInteger(total) ? total : null
+}
+
+// How many input tensors the group carries, so the chart can offer an input selector.
+export function inputCountOf(rows) {
+  return Math.max(1, ...rows.map(row => String(row['输入 Shape'] || '').split(';').filter(Boolean).length))
 }

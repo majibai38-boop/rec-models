@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { exportCsv } from './tableExport.js'
 import { colorOf } from './npuPairView.js'
-const props = defineProps({job:Object, api:Function, scope:Object, thresholds:Object})
+const props = defineProps({job:Object, api:Function, scope:Object, thresholds:Object, focus:String})
 defineEmits(['details'])
 const page = ref(0), total = ref(0), rows = ref([]), error = ref(''), loading = ref(false), retry = ref(0)
 const limit = 30
@@ -36,7 +36,13 @@ watch(()=>`${props.job.id}|${props.job.attempt}|${page.value}|${retry.value}|${u
     const result=await props.api(url.value+'&offset='+page.value*limit+'&limit='+limit)
     if(current){rows.value=result.items; total.value=result.total}
   } catch(e){if(current)error.value=e.message} finally {if(current)loading.value=false}
-},{immediate:true})
+}, {immediate:true})
+// Charts hand over one shape group to focus; applying it as the search keeps the table honest
+// (the filter box shows what is filtered) and the user can clear it again.
+watch(()=>props.focus, value=>{
+  if (value == null || value === search.value) return
+  draft.value = value; search.value = value; page.value = 0
+})
 </script>
 <template>
   <div class="pair-table">

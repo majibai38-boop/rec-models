@@ -28,13 +28,22 @@ const detail=computed(()=>showDetail.value ? selected.value : null)
 // Both views share one place: switching hides the other table (display:none, so its page and
 // search survive) and brings the heading into view instead of leaving it above the fold.
 const detailHeading = ref(null)
+const detailTable = ref(null)
+const focusShape = ref('')
+// Clicking a bar or a scatter dot narrows the table below to that shape group.
+async function pickShape(row) {
+  if (!row) return
+  focusShape.value = row['输入 Shape'] || row['名称'] || ''
+  await nextTick()
+  detailTable.value?.scrollIntoView({block: 'start'})
+}
 function scrollToHeading() {
   const top = detailHeading.value?.getBoundingClientRect().top
   if (top == null) return
   window.scrollTo({top: Math.max(top + window.scrollY - 88, 0), behavior: 'smooth'})
 }
 async function showDetailView(row) {
-  if (row) selected.value = row
+  if (row) { selected.value = row; focusShape.value = '' }
   if (!selected.value) return
   showDetail.value = true
   await nextTick()
@@ -42,6 +51,7 @@ async function showDetailView(row) {
 }
 async function hideDetailView() {
   showDetail.value = false
+  focusShape.value = ''
   await nextTick()
   scrollToHeading()
 }
@@ -150,8 +160,8 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
       <h2 ref="detailHeading">{{ detail ? '详细比较 · '+detail['OP Type']+' / '+(detail['Core Type']||'未标记') : '类型对比' }}</h2>
       <button v-if="detail" @click="hideDetailView">← 返回类型对比</button>
       <NpuPairTable v-show="!detail" :job="job" :api="api" :thresholds="thresholds" @details="showDetailView($event)"/>
-      <NpuPairDetailCharts v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds"/>
-      <NpuPairTable v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds"/>
+      <NpuPairDetailCharts v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds" @select="pickShape"/>
+      <div ref="detailTable"><NpuPairTable v-if="detail" :job="job" :api="api" :scope="detail" :thresholds="thresholds" :focus="focusShape"/></div>
     </template>
     <template v-else><h2>类型对比（历史结果）</h2><p class="notice">此结果没有 CV 和详细比较索引，可复用输入重新分析。</p>
       <div class="table-scroll"><table><thead><tr><th>类型</th><th>基线 μs</th><th>对比 μs</th><th>对比 / 基线</th></tr></thead><tbody>
