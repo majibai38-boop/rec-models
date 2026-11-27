@@ -5,6 +5,24 @@ import math
 
 
 RULE = "aicore_time(us) = 0: Vector; > 0: Cube; missing/invalid: Unknown"
+# Fallback when the CSV has no usable counter at all: the core type still says which unit ran.
+CORE_RULE = ("Accelerator Core: AI_CORE/AIC -> Cube; AI_VECTOR_CORE/AIV -> Vector; "
+             "MIX_AIC/MIX_AIV/MIX -> Mixed; missing/other -> Unknown")
+CUBE_CORES = frozenset({"AI_CORE", "AIC", "AI_CUBE_CORE"})
+VECTOR_CORES = frozenset({"AI_VECTOR_CORE", "AIV"})
+MIXED_CORES = frozenset({"MIX_AIC", "MIX_AIV", "MIX"})
+
+
+def core_category(core_type):
+    """Estimate the class from the core type; a mixed core cannot be split into two."""
+    name = str(core_type or "").strip().upper()
+    if name in CUBE_CORES:
+        return "Cube"
+    if name in VECTOR_CORES:
+        return "Vector"
+    if name in MIXED_CORES:
+        return "Mixed"
+    return "Unknown"
 
 
 def counter(value):

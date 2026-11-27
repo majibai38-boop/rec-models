@@ -44,7 +44,15 @@ async function hideDetailView() {
   await nextTick()
   scrollToHeading()
 }
-const classes = {Cube:'Cube',Vector:'Vector',Unknown:'未知'}
+const classes = {Cube:'Cube',Vector:'Vector',Mixed:'混合核',Unknown:'未知'}
+// Say which side fell back to the core type instead of a measured aicore_time counter.
+const cvNote = computed(() => {
+  const estimated = Object.entries(sides).filter(([key]) => summary.value?.[key]?.cv_source === 'core').map(([, label]) => label)
+  if (!estimated.length) return 'CV 按 aicore_time 判定：正值为 Cube、零为 Vector，其余未知。'
+  const detail = '按 Accelerator Core 估计（AI_CORE → Cube、AI_VECTOR_CORE → Vector、MIX → Mixed）'
+  return estimated.length === 2 ? `两侧都没有 aicore_time 计数，Cube/Vector ${detail}。`
+    : `${estimated.join('、')}没有 aicore_time 计数，该侧 Cube/Vector ${detail}。`
+})
 // Performance-ratio thresholds. They are sent with the run so the Excel/JSON use the same
 // numbers the workbench colours by; later edits only recolour the live table.
 const DEFAULTS = {cube:2, vector:1.1}
@@ -112,7 +120,7 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
         <p v-for="(g,k) in summary[side].cv" :key="k">{{ classes[k] }} · {{ format(g.time_us) }} μs · {{ g.time_pct==null?'—':format(g.time_pct)+'%' }}</p></template>
     </article><article><span>总体性能比 · 基线 / 对比</span><strong>{{ format(summary.overall['性能比(基线/对比)']) }}</strong><p>各端所选范围的全部 kernel</p></article></div>
     <p class="notice">性能比为耗时的反比：大于 1 表示对比侧用更少时间完成同样工作，小于 1 表示对比侧更慢。这是 kernel Duration 之和，多 stream 可重叠，不是 Step 墙钟时间。</p>
-    <p class="muted">CV 按 aicore_time 分类：正值为 Cube、零为 Vector，其余未知。占比分母为该侧全部 kernel 的 Duration，而非硬件利用率。</p>
+    <p class="muted">{{ cvNote }}占比分母为该侧全部 kernel 的 Duration，而非硬件利用率。</p>
     <template v-if="summary.conclusions?.length">
       <h2>结论</h2>
       <ul class="conclusions"><li v-for="(c,i) in summary.conclusions" :key="i"><strong>{{ c.kind }}</strong><span>{{ c.text }}</span></li></ul>
@@ -147,7 +155,7 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
   </section>
 </template>
 <style scoped>
-.cv-bar{display:flex;height:8px;background:#edf1ef;border-radius:4px;overflow:hidden;margin:12px 0}.Cube{background:#167d78}.Vector{background:#7489ba}.Unknown{background:#8c9198}
+.cv-bar{display:flex;height:8px;background:#edf1ef;border-radius:4px;overflow:hidden;margin:12px 0}.Cube{background:#167d78}.Vector{background:#7489ba}.Mixed{background:#c08a4a}.Unknown{background:#8c9198}
 .conclusions{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px}.conclusions li{display:flex;gap:12px;align-items:flex-start;line-height:1.65}.conclusions strong{flex:0 0 76px;color:#167d78}
 .threshold-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:16px 0 8px;padding:12px 16px;background:#f7faf9;border:1px solid #e3ece7;border-radius:9px}
 .threshold-label{font-size:12px;font-weight:600;color:#2f6d59}

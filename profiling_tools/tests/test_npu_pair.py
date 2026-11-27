@@ -6,8 +6,9 @@ import tempfile
 import unittest
 import zipfile
 
-from profiling_tools.npu_pair import (below_threshold, compare_npus, dominant_name, inspect_side,
-                                      ratio_color, validate_thresholds, write_below_threshold_xlsx)
+from profiling_tools.npu_pair import (below_threshold, compare_npus, counter_available, dominant_name,
+                                      inspect_side, ratio_color, validate_thresholds,
+                                      write_below_threshold_xlsx)
 
 
 class PairTest(unittest.TestCase):
@@ -133,6 +134,46 @@ class PairTest(unittest.TestCase):
         self.assertEqual(report['thresholds']['band'],0.5)
         self.assertEqual(report['baseline']['cv']['Vector']['time_pct'],50)
         self.assertEqual(report['candidate']['cv']['Unknown']['time_us'],4)
+        self.assertEqual(report['baseline']['cv_source'],'counter')
+
+    def test_counter_available_detects_the_column(self):
+        def write(name, header, row):
+            with (self.root/name).open('w', newline='', encoding='utf8') as handle:
+                writer = csv.writer(handle)
+                writer.writerow(header)
+                writer.writerow(row)
+        write('nocounter.csv', ('Type', 'Duration(us)'), ('A', 1))
+        write('emptycounter.csv', ('Type', 'Duration(us)', 'aicore_time(us)'), ('A', 1, ''))
+        write('withcounter.csv', ('Type', 'Duration(us)', 'aicore_time(us)'), ('A', 1, 4))
+        write('zerocounter.csv', ('Type', 'Duration(us)', 'aicore_time(us)'), ('A', 1, 0))
+        self.assertFalse(counter_available(self.root/'nocounter.csv'))
+        self.assertFalse(counter_available(self.root/'emptycounter.csv'))
+        self.assertTrue(counter_available(self.root/'withcounter.csv'))
+        self.assertTrue(counter_available(self.root/'zerocounter.csv'))  # zero is a measured value
+
+    def test_missing_counter_falls_back_to_the_core_type(self):
+        header = ('Step Id', 'Type', 'Accelerator Core', 'Duration(us)')
+        sides = {
+            'a': [(1, 'MatMul', 'AI_CORE', 60), (1, 'Add', 'AI_VECTOR_CORE', 30), (1, 'Mix', 'MIX_AIC', 10)],
+            'b': [(1, 'MatMul', 'AI_CORE', 30), (1, 'Add', 'AI_VECTOR_CORE', 60), (1, 'Mix', 'MIX_AIC', 10)],
+        }
+        for side, rows in sides.items():
+            with (self.root/side).open('w', newline='', encoding='utf8') as handle:
+                writer = csv.writer(handle)
+                writer.writerow(header)
+                writer.writerows(rows)
+        report = compare_npus(self.root/'a', self.root/'b', self.root/'result', baseline_step='1', candidate_step='1')
+        self.assertEqual(report['baseline']['cv_source'], 'core')
+        self.assertEqual(report['candidate']['cv_source'], 'core')
+        self.assertIn('AI_CORE', report['baseline']['cv_rule'])
+        cv = report['baseline']['cv']
+        self.assertEqual({name: value['count'] for name, value in cv.items()},
+                         {'Cube': 1, 'Vector': 1, 'Mixed': 1, 'Unknown': 0})
+        self.assertEqual(cv['Cube']['time_us'], 60)
+        self.assertEqual({row['OP Type']: row['CV'] for row in report['types']},
+                         {'MatMul': 'Cube', 'Add': 'Vector', 'Mix': 'Mixed'})
+        structure = {item['kind']: item['text'] for item in report['conclusions']}['结构']
+        self.assertIn('Accelerator Core 估计', structure)
 
     def test_thresholds_split_each_class_into_four_colours(self):
         limits = validate_thresholds(2.0, 1.1)

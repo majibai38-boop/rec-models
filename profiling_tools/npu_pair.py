@@ -10,8 +10,8 @@ from pathlib import Path
 import re
 import sys
 
-from .parser import _normalized_id, iter_kernel_details
-from .core_breakdown import category
+from .parser import _normalized_id, _row_lookup, iter_kernel_details
+from .core_breakdown import CORE_RULE, RULE, category, core_category, counter
 from .pipeline_analysis import (ADVICE, DOMINANCE_MARGIN, LABELS, METHOD, THRESHOLD,
                                 classify as classify_pipeline, summarize_buckets)
 from .provenance import write_json
@@ -46,6 +46,24 @@ def step_id(value):
     return match.group(1) if match else text
 
 
+def counter_available(path):
+    """True when the file carries at least one usable aicore_time value.
+
+    Reads the header first, so a CSV without the column costs one line; a column that is
+    present but empty costs one scan instead of silently reporting every kernel as Unknown.
+    """
+    with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        names = reader.fieldnames or ()
+        if not _row_lookup({name: name for name in names},
+                           "aicore_time(us)", "aicore_time(μs)", "aicore_time"):
+            return False
+        for row in reader:
+            if counter(_row_lookup(row, "aicore_time(us)", "aicore_time(μs)", "aicore_time")) is not None:
+                return True
+    return False
+
+
 def _rows(path, side):
     try:
         for d in iter_kernel_details(path):
@@ -67,12 +85,13 @@ def inspect_side(path, side):
     return {"devices": dict(devices), "steps": dict(steps), "count": sum(steps.values())}
 
 
-def collect(path, side, step, device):
+def collect(path, side, step, device, source="counter"):
     # Keep each view disjoint within a side. Stream/task IDs and row order are run-local.
     types = defaultdict(lambda: [0, 0.0, set(), {}])
     signatures = defaultdict(lambda: [0, 0.0, set(), Counter()])
     pipes = defaultdict(lambda: [0, 0.0])
-    cv = {name: {"count": 0, "time_us": 0.0} for name in ("Cube", "Vector", "Unknown")}
+    buckets = ("Cube", "Vector", "Mixed", "Unknown") if source == "core" else ("Cube", "Vector", "Unknown")
+    cv = {name: {"count": 0, "time_us": 0.0} for name in buckets}
     devices, selected_steps = set(), Counter()
     selected, skipped_unmarked = 0, 0
     ratios = None  # Decided from the first selected row; the CSV has one fixed schema.
@@ -87,7 +106,8 @@ def collect(path, side, step, device):
         selected_steps[label] += 1
         selected += 1
         signature = (d.op_type, d.core_type, d.input_shapes, d.input_dtypes, d.output_shapes, d.output_dtypes)
-        cls = category(d.aicore_time_us)
+        # Without a counter the core type is the only evidence left, and it is labelled as such.
+        cls = category(d.aicore_time_us) if source == "counter" else core_category(d.core_type)
         cv[cls]["count"] += 1
         cv[cls]["time_us"] += d.duration_us
         if ratios is None:
@@ -117,6 +137,8 @@ def collect(path, side, step, device):
     for g in cv.values():
         g["time_pct"] = 100 * g["time_us"] / total if total else None
     scope["cv"] = cv
+    scope["cv_source"] = source
+    scope["cv_rule"] = RULE if source == "counter" else CORE_RULE
     scope["pipeline"] = summarize_buckets(pipes)
     return types, signatures, scope
 
@@ -290,18 +312,20 @@ def conclusions(overall, rows, baseline, candidate):
                       "这些类型没有独立性能比，需先确认两侧 batch、精度与工作量是否等价。")
 
     shifts = [(name, baseline["cv"][name]["time_pct"], candidate["cv"][name]["time_pct"])
-              for name in ("Cube", "Vector", "Unknown")
+              for name in ("Cube", "Vector", "Unknown") if name in baseline["cv"] and name in candidate["cv"]
               if baseline["cv"][name]["time_pct"] is not None and candidate["cv"][name]["time_pct"] is not None]
+    estimated = "core" in (baseline.get("cv_source"), candidate.get("cv_source"))
+    basis = ("Cube/Vector 由 Accelerator Core 估计，不是实测计数器" if estimated else
+             "占比分母是各侧全部 kernel 的 Duration，不是硬件利用率")
     if shifts:
         name, before, after = max(shifts, key=lambda item: abs(item[2] - item[1]))
         if baseline["cv"]["Unknown"]["time_pct"] == 100 and candidate["cv"]["Unknown"]["time_pct"] == 100:
-            add("结构", "两侧都没有可用的 aicore_time 计数，Cube/Vector 全部归入 Unknown，无法比较结构变化。")
+            add("结构", "两侧都拿不到 Cube/Vector 分类：既没有 aicore_time 计数，也没有可识别的 Accelerator Core。")
         elif abs(after - before) < 0.05:
-            add("结构", "两侧 Cube/Vector/Unknown 的时间占比一致，没有可辨识的结构变化；"
-                        "占比分母是各侧全部 kernel 的 Duration，不是硬件利用率。")
+            add("结构", f"两侧 Cube/Vector/Unknown 的时间占比一致，没有可辨识的结构变化；{basis}。")
         else:
             add("结构", f"{name} 时间占比 {before:.1f}% → {after:.1f}%（{after - before:+.1f}pp），"
-                        "为两侧占比变化最大的一类；占比分母是各侧全部 kernel 的 Duration，不是硬件利用率。")
+                        f"为两侧占比变化最大的一类；{basis}。")
 
     headlines = (_pipeline_headline(baseline), _pipeline_headline(candidate))
     if headlines == (None, None):
@@ -325,8 +349,11 @@ def compare_npus(baseline_details, candidate_details, output_dir, *, baseline_st
     out = Path(output_dir)
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise ValueError("输出目录必须是新目录或空目录")
-    a, sa, base_scope = collect(baseline_details, "基线", steps[0], _normalized_id(baseline_device))
-    b, sb, cand_scope = collect(candidate_details, "对比", steps[1], _normalized_id(candidate_device))
+    # Prefer the measured counter; fall back to the core type only when a side has none.
+    base_source = "counter" if counter_available(baseline_details) else "core"
+    cand_source = "counter" if counter_available(candidate_details) else "core"
+    a, sa, base_scope = collect(baseline_details, "基线", steps[0], _normalized_id(baseline_device), base_source)
+    b, sb, cand_scope = collect(candidate_details, "对比", steps[1], _normalized_id(candidate_device), cand_source)
     types = table(a, b, SIGNATURE[:2], limits)
     shapes = table(sa, sb, SIGNATURE, limits, decorate=lambda x, y: {"名称": dominant_name(x, y)})
     def totals(groups):
