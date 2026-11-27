@@ -111,8 +111,14 @@ class PairTest(unittest.TestCase):
         self.assertEqual(json.loads((self.root/'result'/'npu_pair.json').read_text(encoding='utf8')), report)
         with zipfile.ZipFile(self.root/'result'/'npu_pair.xlsx') as archive:
             workbook = archive.read('xl/workbook.xml').decode()
+            worksheets = [archive.read(f'xl/worksheets/sheet{index}.xml').decode() for index in range(1, 9)]
         for sheet in ('结论', '流水总览', '流水-类型'):
             self.assertIn(sheet, workbook)
+        # The 结论 tab used to ship with headers only, because kind/text never matched 类别/结论.
+        self.assertIn('总体', worksheets[0])
+        self.assertIn('性能比', worksheets[0])
+        # 整体 is a field/value list, not one very wide row.
+        self.assertIn('基线设备', worksheets[3])
 
     def test_core_scopes_colors_and_time_shares(self):
         for side, durations in [('a',[10]*6), ('b',[5,4,9,12,3,4])]:

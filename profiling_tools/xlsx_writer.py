@@ -22,6 +22,8 @@ class TableSheet:
     merge_columns: Sequence[str] = ()
     rows: Sequence[Mapping[str, Any]] | None = None
     wrap_columns: Sequence[str] = ()
+    # Keeps a sheet of mixed one- and two-line rows visually even.
+    min_row_height: float = 0
     freeze_columns: int = 0
     hidden_columns: Sequence[str] = ()
     links: Mapping[tuple[int, str], str] | None = None
@@ -57,14 +59,19 @@ def _cell_xml(reference: str, value: Any, style: int) -> str:
     )
 
 
+def _display_width(value: Any) -> int:
+    """Width in Excel character units; East Asian characters take about two."""
+    return sum(2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1 for ch in str(value))
+
+
 def _column_width(fieldname: str, rows: Sequence[Mapping[str, Any]]) -> float:
-    longest = len(fieldname)
+    longest = _display_width(fieldname)
     for row in rows:
         value = str(row.get(fieldname, ""))
         for part in value.splitlines() or [""]:
-            longest = max(longest, len(part))
+            longest = max(longest, _display_width(part))
     if fieldname in {"FUSED_OP_NPU_TYPE", "FUSED_OP_GPU_TYPE"}:
-        return min(max(longest + 2, 20), 42)
+        return min(max(longest + 3, 20), 44)
     if fieldname == "Mapping Mode Counts":
         return min(max(longest + 2, 24), 60)
     if fieldname == "排查结论":
@@ -73,10 +80,13 @@ def _column_width(fieldname: str, rows: Sequence[Mapping[str, Any]]) -> float:
         return 76
     if fieldname == "结论":
         return 88
+    if fieldname == "名称":
+        # Wide enough to keep every row one line high; wrapped names made rows jump in height.
+        return min(max(longest + 3, 12), 46)
     if fieldname == "下一步检查":
         return 60
     if fieldname == "OP Type":
-        return min(max(longest + 2, 16), 36)
+        return min(max(longest + 3, 16), 38)
     if fieldname == "NPU Types":
         return min(max(longest + 2, 24), 48)
     if fieldname == "Scope":
@@ -87,7 +97,7 @@ def _column_width(fieldname: str, rows: Sequence[Mapping[str, Any]]) -> float:
         return 34
     if fieldname in {"NPU Input Shapes", "NPU Input DTypes", "NPU Kernel Indices", "GPU Kernel Indices"}:
         return 28
-    return min(max(longest + 2, 10), 24)
+    return min(max(longest + 3, 10), 26)
 
 
 def _worksheet_xml(
@@ -99,6 +109,7 @@ def _worksheet_xml(
     freeze_columns: int = 0,
     hidden_columns: Sequence[str] = (),
     links: Mapping[tuple[int, str], str] | None = None,
+    min_row_height: float = 0,
 ) -> str:
     merge_column_indices = {
         fieldnames.index(fieldname)
@@ -184,7 +195,7 @@ def _worksheet_xml(
                 )
             )
         mode_counts = str(row.get("Mapping Mode Counts", "")) if "Mapping Mode Counts" in fieldnames else ""
-        row_height = min(90, 15 * max(1, math.ceil(len(mode_counts) / 58)))
+        row_height = max(min_row_height, min(90, 15 * max(1, math.ceil(len(mode_counts) / 58))))
         if wrap_columns:
             row_height = max(row_height, 15 * max(
                 1, *(sum(max(1, math.ceil(sum(2 if unicodedata.east_asian_width(c) in {"W", "F"} else 1 for c in line)
@@ -278,39 +289,53 @@ def write_grouped_workbook_xlsx(
         '<fill><patternFill patternType="solid"><fgColor rgb="FFFFD966"/>'
         '<bgColor indexed="64"/></patternFill></fill>'
         '</fills>'
-        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/>'
-        '</border></borders>'
+        # A hairline grid: without it the numbers float in white space and the sheet reads as
+        # ragged, which is what "凹凸不平" was about.
+        '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
+        '<border><left style="thin"><color rgb="FFD3DCD8"/></left>'
+        '<right style="thin"><color rgb="FFD3DCD8"/></right>'
+        '<top style="thin"><color rgb="FFD3DCD8"/></top>'
+        '<bottom style="thin"><color rgb="FFD3DCD8"/></bottom><diagonal/></border>'
+        '</borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" '
         'borderId="0"/></cellStyleXfs>'
         '<cellXfs count="19">'
-        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
-        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" '
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyBorder="1" '
         'applyFont="1" applyFill="1" applyAlignment="1">'
         '<alignment horizontal="center" vertical="center" wrapText="1"/></xf>'
-        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" '
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" '
         'applyAlignment="1"><alignment horizontal="center" vertical="center" '
         'wrapText="1"/></xf>'
-        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" '
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" '
         'applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>'
-        '<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
-        '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
-        '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
-        '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
-        '<xf numFmtId="166" fontId="1" fillId="3" borderId="0" xfId="0" '
-        'applyNumberFormat="1" applyFont="1" applyFill="1"/>'
-        '<xf numFmtId="166" fontId="0" fillId="4" borderId="0" xfId="0" '
-        'applyNumberFormat="1" applyFill="1"/>'
-        '<xf numFmtId="166" fontId="0" fillId="5" borderId="0" xfId="0" '
-        'applyNumberFormat="1" applyFill="1"/>'
-        + ''.join(f'<xf numFmtId="{fmt}" fontId="2" fillId="6" borderId="0" xfId="0" '
+        '<xf numFmtId="3" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyNumberFormat="1" '
+        'applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>'
+        '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyNumberFormat="1" '
+        'applyAlignment="1"><alignment vertical="center"/></xf>'
+        '<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyNumberFormat="1" '
+        'applyAlignment="1"><alignment vertical="center"/></xf>'
+        '<xf numFmtId="166" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyNumberFormat="1" '
+        'applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>'
+        '<xf numFmtId="166" fontId="1" fillId="3" borderId="1" xfId="0" applyBorder="1" '
+        'applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center"/></xf>'
+        '<xf numFmtId="166" fontId="0" fillId="4" borderId="1" xfId="0" applyBorder="1" '
+        'applyNumberFormat="1" applyFill="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center"/></xf>'
+        '<xf numFmtId="166" fontId="0" fillId="5" borderId="1" xfId="0" applyBorder="1" '
+        'applyNumberFormat="1" applyFill="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center"/></xf>'
+        + ''.join(f'<xf numFmtId="{fmt}" fontId="2" fillId="6" borderId="1" xfId="0" applyBorder="1" '
                   'applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1">'
                   f'<alignment vertical="center"{alignment}/></xf>'
                   for fmt, alignment in ((0, ''), (0, ' horizontal="center" wrapText="1"'),
                                          (0, ' wrapText="1"'), (3, ''), (164, ''), (165, ''), (166, '')))
         +
         # 18: dark yellow, the fourth performance-ratio class.
-        '<xf numFmtId="166" fontId="0" fillId="7" borderId="0" xfId="0" '
-        'applyNumberFormat="1" applyFill="1"/>'
+        '<xf numFmtId="166" fontId="0" fillId="7" borderId="1" xfId="0" applyBorder="1" '
+        'applyNumberFormat="1" applyFill="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center"/></xf>'
         '</cellXfs>'
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/>'
         '</cellStyles>'
@@ -382,6 +407,7 @@ def write_grouped_workbook_xlsx(
                     sheet.freeze_columns,
                     sheet.hidden_columns,
                     sheet.links,
+                    sheet.min_row_height,
                 ),
             )
         archive.writestr("xl/styles.xml", styles_xml)

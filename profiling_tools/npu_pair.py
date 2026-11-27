@@ -236,7 +236,7 @@ def below_threshold(rows, limits):
 
 def write_below_threshold_xlsx(path, rows):
     write_grouped_workbook_xlsx(Path(path), [], [
-        TableSheet("未达标算子", BELOW_COLUMNS, rows=excel_rows(rows), wrap_columns=("名称",))])
+        TableSheet("未达标算子", BELOW_COLUMNS, rows=excel_rows(rows))])
 
 
 def pipeline_overview(baseline, candidate):
@@ -382,12 +382,16 @@ def compare_npus(baseline_details, candidate_details, output_dir, *, baseline_st
     cv_rows = [{"侧": side, "CV": cls, "数量": g["count"], "耗时(us)": g["time_us"], "占比(%)": g["time_pct"]}
                for side, scope in (("基线", base_scope), ("对比", cand_scope)) for cls, g in scope["cv"].items()]
     pipe_rows = pipeline_overview(base_scope, cand_scope)
+    # One field per row reads better than a single very wide row of label/value pairs.
+    overview_rows = [{"字段": name, "值": "" if value is None else value} for name, value in overview.items()]
     missed = below_threshold(shapes, limits)
+    # conclusions() speaks kind/text; the sheet shows them under Chinese headers.
+    finding_rows = [{"类别": row["kind"], "结论": row["text"]} for row in findings]
     write_grouped_workbook_xlsx(out/REPORTS[0], [], [
-        TableSheet("结论", ("类别", "结论"), rows=excel_rows(findings), wrap_columns=("结论",)),
+        TableSheet("结论", ("类别", "结论"), rows=finding_rows, wrap_columns=("结论",), min_row_height=30),
         TableSheet("类型对比", (*SIGNATURE[:2], "CV", *METRICS), rows=excel_rows(types)),
-        TableSheet("未达标算子", BELOW_COLUMNS, rows=excel_rows(missed), wrap_columns=("名称",)),
-        TableSheet("整体", tuple(overview), rows=excel_rows([overview])),
+        TableSheet("未达标算子", BELOW_COLUMNS, rows=excel_rows(missed)),
+        TableSheet("整体", ("字段", "值"), rows=excel_rows(overview_rows)),
         TableSheet("流水总览", PIPELINE_OVERVIEW, rows=excel_rows(pipe_rows), wrap_columns=("下一步检查",)),
         TableSheet("流水-类型", PIPELINE_TYPE,
                    rows=excel_rows(report["pipeline"]["baseline_types"] +
