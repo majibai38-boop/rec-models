@@ -1,7 +1,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import NpuPairTable from './NpuPairTable.vue'
-import PipelineSummary from './PipelineSummary.vue'
+import NpuPairPipelineTable from './NpuPairPipelineTable.vue'
 import ReportDownloads from './ReportDownloads.vue'
 const props = defineProps({ job: Object, busy: Boolean, api:Function })
 defineEmits(['run'])
@@ -83,7 +83,7 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
     <button class="primary" :disabled="busy || !ready" @click="$emit('run',payload())">开始 NPU 对比 →</button>
   </section>
   <section v-if="job.status==='succeeded' && summary" class="panel">
-    <ReportDownloads :job="job"><a class="button" :href="belowHref" :title="belowTitle">↓ 未达标算子 Excel</a></ReportDownloads>
+    <ReportDownloads :job="job"/>
     <h2>NPU 对比总览</h2>
     <p v-for="(label,side) in sides" :key="side">{{ label }}：{{ job.inputs[side+'_details'].name }} · Device {{ summary[side].device || '未标记' }} · {{ summary[side].step || '全量' }} · 排除无 Step 标记 {{ summary[side].excluded_unmarked }} 行</p>
     <div class="metrics"><article v-for="(label,side) in sides" :key="side"><span>{{ label }} · 总耗时</span>
@@ -98,11 +98,9 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
       <ul class="conclusions"><li v-for="(c,i) in summary.conclusions" :key="i"><strong>{{ c.kind }}</strong><span>{{ c.text }}</span></li></ul>
     </template>
     <template v-if="summary.pipeline">
-      <h2>NPU 流水初筛</h2>
-      <p class="muted">按每个 kernel 的 PipeUtilization 归类；类别耗时互斥，无法分类的时间一并计入 Unknown 分母。仅为瓶颈候选，不是 Roofline 饱和结论。</p>
-      <div class="pipeline-sides"><div v-for="(label,side) in sides" :key="side">
-        <h3>{{ label }}</h3><PipelineSummary :data="summary[side].pipeline"/>
-      </div></div>
+      <h2>NPU 流水初筛 · 按算子</h2>
+      <p class="muted">按每个 kernel 的 PipeUtilization 归类后汇总到 OP Type + Core Type；类别耗时互斥，无法分类的时间一并计入 Unknown 分母。仅为瓶颈候选，不是 Roofline 饱和结论。</p>
+      <NpuPairPipelineTable :job="job" :api="api"/>
     </template>
     <template v-if="summary.schema_version>=2">
       <div class="tabs" role="tablist" aria-label="NPU 比较视图">
@@ -114,6 +112,7 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
         <label>Cube <input type="number" v-model.number="thresholds.cube" min="0.1" step="0.1" aria-label="Cube 性能比阈值"></label>
         <label>Vector <input type="number" v-model.number="thresholds.vector" min="0.1" step="0.1" aria-label="Vector 性能比阈值"></label>
         <button type="button" @click="resetThresholds">恢复默认</button>
+        <a class="button below-export" :href="belowHref" :title="belowTitle">↓ 导出未达标算子</a>
         <span class="ratio-legend"><i class="dark-green">≥ 1.5× 阈值</i><i class="green">≥ 阈值</i><i class="yellow">≥ 0.5× 阈值</i><i class="dark-yellow">&lt; 0.5× 阈值</i></span>
       </div>
       <p class="muted small">阈值为性能比（基线 / 对比）的达标线：绿色代表达到或超过，黄色代表未达标；Mixed / Unknown 不套用阈值。表内配色随输入实时计算，Excel 使用分析时的阈值。</p>
@@ -130,12 +129,12 @@ const belowTitle = computed(() => `按当前阈值导出：Cube ${thresholds.cub
 <style scoped>
 .cv-bar{display:flex;height:8px;background:#edf1ef;border-radius:4px;overflow:hidden;margin:12px 0}.Cube{background:#167d78}.Vector{background:#7489ba}.Unknown{background:#8c9198}
 .conclusions{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px}.conclusions li{display:flex;gap:12px;align-items:flex-start;line-height:1.65}.conclusions strong{flex:0 0 76px;color:#167d78}
-.pipeline-sides{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin:12px 0}
 .threshold-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:16px 0 8px;padding:12px 16px;background:#f7faf9;border:1px solid #e3ece7;border-radius:9px}
 .threshold-label{font-size:12px;font-weight:600;color:#2f6d59}
 .threshold-row label{display:flex;align-items:center;gap:7px;font-size:12px;color:#617569}
 .threshold-row input{width:82px;padding:6px 9px}
 .threshold-row button{font-size:11px;padding:6px 10px}
+.below-export{font-size:11px;padding:6px 11px;border-style:dashed;color:#2f6d59}
 .ratio-legend{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
 .ratio-legend i{font-style:normal;font-size:10px;padding:3px 8px;border-radius:4px;white-space:nowrap}
 .ratio-legend .dark-green{background:#197746;color:#fff}

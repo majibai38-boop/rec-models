@@ -55,6 +55,13 @@ class NpuPairWebTest(unittest.TestCase):
                 self.assertEqual(client.get(base+"/npu-pair-table",params=params).json()["items"][0]["对比耗时(us)"],6)
                 self.assertFalse(client.get(base+"/npu-pair-table",params={**params,"offset":1}).json()["items"])
                 self.assertTrue(client.get(base+"/artifacts/npu_pair.xlsx").content.startswith(b"PK"))
+                pipeline = client.get(base+"/npu-pair-table", params={"view": "pipeline"}).json()
+                self.assertEqual(pipeline["total"], 1)
+                self.assertEqual([c["category"] for c in pipeline["items"][0]["对比"]["categories"]], ["unknown"])
+                self.assertEqual(client.get(base+"/npu-pair-table",
+                                            params={"view": "pipeline", "search": "add"}).json()["total"], 1)
+                self.assertEqual(client.get(base+"/npu-pair-table",
+                                            params={"view": "pipeline", "search": "other"}).json()["total"], 0)
                 missed = client.get(base+"/npu-pair/below-threshold.xlsx", params={"cube": 3, "vector": 1.5})
                 self.assertEqual(missed.status_code, 200, missed.text[:200])
                 self.assertTrue(missed.content.startswith(b"PK"))

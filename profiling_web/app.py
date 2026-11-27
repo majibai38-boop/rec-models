@@ -629,7 +629,7 @@ def create_app(settings=None):
         return FileResponse(path, media_type='application/json')
 
     @app.get("/api/jobs/{job_id}/npu-pair-table")
-    def npu_pair_table(job_id: str, view: Literal["types", "signatures"] = "types", op: str = "", core: str = "",
+    def npu_pair_table(job_id: str, view: Literal["types", "signatures", "pipeline"] = "types", op: str = "", core: str = "",
                        search: str = Query("", max_length=200), sort: Literal["difference","baseline","candidate","ratio"] = "difference",
                        offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=200)):
         from .npu_pair_index import page
