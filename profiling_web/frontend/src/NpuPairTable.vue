@@ -31,7 +31,7 @@ function colorOf(r) {
   if (ratio >= lower) return 'yellow'
   return 'dark-yellow'
 }
-const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'状态','基线数量','对比数量','基线耗时(us)','对比耗时(us)','差值(us)','性能比(基线/对比)','变化(%)','基线平均(us)','对比平均(us)'])
+const columns = computed(()=>['OP Type','Core Type','CV',...(props.scope ? extra : []),'状态','基线数量','对比数量','基线耗时(us)','对比耗时(us)','性能比(基线/对比)'])
 const display = v => typeof v==='number' ? v.toLocaleString(undefined,{maximumFractionDigits:4}) : (v || '—')
 watch(()=>[url.value,props.job.attempt,page.value,retry.value], async (_,__,cleanup)=>{
   let current = true

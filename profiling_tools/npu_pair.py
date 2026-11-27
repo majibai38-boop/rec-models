@@ -18,8 +18,7 @@ from .provenance import write_json
 from .xlsx_writer import TableSheet, write_grouped_workbook_xlsx
 
 REPORTS = ("npu_pair.xlsx", "npu_pair.json")
-METRICS = ("基线数量", "对比数量", "基线耗时(us)", "对比耗时(us)", "差值(us)", "性能比(基线/对比)",
-           "变化(%)", "基线平均(us)", "对比平均(us)", "状态")
+METRICS = ("基线数量", "对比数量", "基线耗时(us)", "对比耗时(us)", "性能比(基线/对比)", "状态")
 SIGNATURE = ("OP Type", "Core Type", "输入 Shape", "输入 dtype", "输出 Shape", "输出 dtype")
 # 名称 is not part of the grouping key: kernel names may vary inside one shape group, so the
 # sheet shows the dominant one instead of splitting the group.
@@ -148,9 +147,16 @@ def metrics(base, candidate):
     # Performance ratio inverts elapsed time: >1 means the candidate side needs less time.
     factor = a/b if base[0] and candidate[0] and a and b else None
     status = "两侧均有" if base[0] and candidate[0] else "仅基线" if base[0] else "仅对比"
-    return dict(zip(METRICS, (base[0], candidate[0], a, b, b-a, factor,
-                             (factor-1)*100 if factor is not None else None,
-                             a/base[0] if base[0] else None, b/candidate[0] if candidate[0] else None, status)))
+    # Several of these are no longer shown as columns; the conclusions and the below-threshold
+    # export still use them, so the row keeps the full set.
+    return {
+        "基线数量": base[0], "对比数量": candidate[0], "基线耗时(us)": a, "对比耗时(us)": b,
+        "差值(us)": b - a, "性能比(基线/对比)": factor,
+        "变化(%)": (factor-1)*100 if factor is not None else None,
+        "基线平均(us)": a/base[0] if base[0] else None,
+        "对比平均(us)": b/candidate[0] if candidate[0] else None,
+        "状态": status,
+    }
 
 
 def validate_thresholds(cube, vector):
