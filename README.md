@@ -36,6 +36,7 @@ Skill 负责流程选择、命令调用和结果解释；脚本负责设备操�
 | [设备盘点](benchmark_core/inventory/README.md) | OS/厂商采集 profile、本地采集、原始证据、快照与离线汇总 | 发现设备不等于模型运行就绪 |
 | [环境与实验规划](benchmark_core/planning/README.md) | 环境配方、BenchmarkSpec、兼容性规则、矩阵展开、指纹与阻塞报告 | 不安装环境、不启动容器 |
 | [workflow 合同层](benchmark_core/workflow/README.md) | 单目标解析、分层准入、manifest/指标/产物格式、设备锁与中断记录 | 只提供校验和状态基础，不执行三步流程 |
+| [本机归档](benchmark_core/archive/README.md) | staging → 清单 → 校验 → 原子发布 `COMPLETE`；幂等重试与内容冲突检测 | 只有本地 transport；SSH 与 Web 未实现 |
 | [rec-benchmark Skill](skills/rec-benchmark/SKILL.md) | 三步编排说明及当前工具使用约定 | 执行入口目前仅有 `check` / `resolve` |
 | [配置目录](benchmark_catalog/) | 采集 profile、环境模板、DLRM 实验草案与 workflow 示例 | 模板包含待定版本和 hash，需按实际环境补齐 |
 
