@@ -39,6 +39,8 @@ P1-05 可先用明确标识的测试产物实现归档，P1-06 可用同一合�
 
 **P1-01 实施进度（2026-11-26）：** 已实现 `benchmark_core/workflow/` 合同层：`recbench.workflow/v1` 校验与单目标解析（`check` / `resolve`）、原始请求与 `resolved_spec.json` 分开保存并复用 planning 的离线计划、五段分层准入（structure / environment / workload_state / pilot / measurement）、最小 `RunManifest / Metric / Artifact` 合同、设备本地互斥锁、退出码与中断记录，以及 `skills/rec-benchmark/SKILL.md` 流程骨架。执行合同测试 23 项、既有盘点/规划测试 43 项通过。环境准备、模型短跑、性能采集与归档脚本仍未实现，Skill 目前只能完成校验与解析，因此 P1-01 保持未勾选。
 
+**P1-01 外部验证（2026-11-28）：** caw mode2 在 119 宿主机（device2）验证提交 `9615411`，9 项离线验收全部通过：4 项结构检查（workflow、planning spec、CUDA/Ascend 配方）、4 项单元测试（全量、inventory、planning、workflow）和 `workflow resolve` round-trip；0 文件修改，报告 `local_passed`，证据为 caw issue #37。同一提交在本机实测 66 项单测通过（28 + 15 + 23）。本验证只覆盖离线配置、测试与解析，不含 GPU/NPU 执行，也不改变 P1-01 的未勾选状态；环境搭建、模型运行、性能采集与归档仍待实现。
+
 ### P1-02：环境搭建
 
 - [ ] 复用 inventory 采集当前节点；记录真实设备身份、OS、驱动、固件和可见性。
@@ -115,4 +117,5 @@ P1-05 可先用明确标识的测试产物实现归档，P1-06 可用同一合�
 - 第一阶段任务均保持未勾选：P1-01 只完成合同层与 Skill 骨架，三步执行脚本、归档与 Web 尚未实现；现有盘点/规划基础不是完整三步执行能力。
 - 每完成任务记录实现位置、测试、真实设备证据与限制；仅 mock 通过不得标记硬件验收完成。
 - 2026-10-28：设备盘点工具实现；2026-10-29：离线规划基础实现；2026-11-25：清理历史工具，43 项回归通过，并按新的短期目标调整本计划；2026-11-26：P1-01 合同层与 Skill 骨架实现，`python -m unittest discover -s benchmark_core` 66 项通过，仍缺执行脚本与真实硬件证据。
+- 2026-11-28：P1-01 合同层经 caw mode2 在 119 宿主机（device2）验证 `9615411`，4 项结构检查、4 项单测与 `workflow resolve` round-trip 共 9 项通过（caw issue #37）；同 SHA 本机 66 项单测通过。该证据仍属离线软件验证，不含 GPU/NPU 执行。
 - 当前仍需在实际执行时确定节点、可用容器工具、配方版本和归档路径；远端归档仅在用户显式指定后启用，缺省使用本机。
